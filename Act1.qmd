@@ -1,0 +1,1998 @@
+---
+title: "Actividad 1. Análisis de datos en el ámbito clínico"
+author: "Alberto Montero Solera"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    fig-cap-location: top
+    theme: readable
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true
+    page-layout: full
+    self-contained: true
+---
+
+```{r setup, include=FALSE}
+paquetes <- c("knitr", "readxl", "skimr", "dplyr", "DT", "ggplot2",  
+              "gridExtra", "tidyr", "reshape2", "stats", "corrplot", 
+              "caret", "pROC", "kableExtra", "survival", "survminer", 
+              "lubridate", "purrr")
+
+for (paquete in paquetes) {
+  if (!requireNamespace(paquete, quietly = TRUE)) {
+    install.packages(paquete)
+  }
+}
+
+lapply(paquetes, library, character.only = TRUE)
+
+opts_chunk$set(echo = TRUE, collapse = TRUE)
+
+# Identificación del ordenador donde se ejecuta
+my_computer <- Sys.info()[c(4, 1, 5, 7)]
+```
+
+```{r, include=FALSE}
+analizar_variables <- function(data, variables_interes) {
+  
+  # Crear listas vacías para almacenar variables según condición
+  vars_numericas <- list()
+  vars_categoricas <- list()
+  
+  # Iterar sobre cada variable en la lista de interés
+  for (variable in variables_interes) {
+    
+    # Verificar si la variable existe en el dataset
+    if (!(variable %in% colnames(data))) {
+      message(paste("⚠️ Advertencia: La variable", variable, "no está en el dataset."))
+      next  # Pasar a la siguiente variable
+    }
+    
+    # Si la variable es numérica, agregarla a la lista de numéricas
+    if (is.numeric(data[[variable]])) {
+      vars_numericas[[variable]] <- data[[variable]]
+    }
+    
+    # Si la variable es categórica (factor o character), agregarla a la lista de categóricas
+    if (is.character(data[[variable]]) || is.factor(data[[variable]])) {
+      vars_categoricas[[variable]] <- as.factor(data[[variable]])  # Convertir a factor si es character
+    }
+  }
+  
+  # Devolver ambas listas en un solo objeto
+  return(list(Numericas = vars_numericas, Categoricas = vars_categoricas))
+}
+
+# 📌 Función para analizar múltiples variables en un dataset
+analizar_variables_df <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("❌ Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # 📌 Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # 📌 Iterar sobre cada variable
+  for (variable in variables_existentes) {
+    
+      # Extraer estadísticas
+      resumen <- summary(data[[variable]], na.rm = TRUE)
+      
+      # Crear DataFrame con estadísticas
+      df_resumen <- data.frame(
+        Variable = variable,
+        Min = as.numeric(resumen[1]),  
+        Q1 = as.numeric(resumen[2]),
+        Mediana = as.numeric(resumen[3]),
+        Media = mean(data[[variable]], na.rm = TRUE),
+        Q3 = as.numeric(resumen[5]),
+        Max = as.numeric(resumen[6]),
+        Varianza = var(data[[variable]], na.rm = TRUE),
+        Desviacion = sd(data[[variable]], na.rm = TRUE)
+      )
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # 📌 Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  return(resultados_final)  # Devolver DataFrame final
+}
+
+visualizar_variable <- function(data, variable) {
+  if (is.numeric(data[[variable]])) {
+    # 📊 Si es numérica: Histograma y Boxplot
+    # Ajustar el binwidth del histograma según el rango de la variable
+    rango <- range(data[[variable]], na.rm = TRUE)
+    binwidth <- (rango[2] - rango[1]) / 30  # Establece el binwidth de manera automática
+    
+    p1 <- ggplot(data, aes(x = !!sym(variable))) +
+      geom_histogram(binwidth = binwidth, fill = "tomato", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Histograma de", variable), x = variable, y = "Frecuencia") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotar etiquetas para mejor visualización
+    
+    p2 <- ggplot(data, aes(y = !!sym(variable))) +
+      geom_boxplot(fill = "gold", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Boxplot de", variable), y = variable) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    grid.arrange(p1, p2, ncol = 2)
+    
+  } else {
+    # 📊 Si es categórica: Gráfico de barras y Pie Chart
+    p1 <- ggplot(data, aes(x = !!sym(variable))) +
+      geom_bar(fill = "steelblue", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Distribución de", variable), x = variable, y = "Frecuencia") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    p2 <- ggplot(data, aes(x = "", fill = !!sym(variable))) +
+      geom_bar(width = 1) +
+      coord_polar("y") +
+      theme_void() +
+      labs(title = paste("Distribución de", variable))
+    
+    grid.arrange(p1, p2, ncol = 2)
+  }
+}
+
+# 📌 Función para analizar variables categóricas en un dataset y devolver un datatable interactivo
+analizar_variables_categoricas <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("❌ Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # 📌 Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # 📌 Iterar sobre cada variable categórica
+  for (variable in variables_existentes) {
+    
+    if (is.factor(data[[variable]]) | is.character(data[[variable]])) {
+      # 📊 Si es variable categórica (factor o carácter)
+      
+      # Frecuencia absoluta de las categorías
+      freq_abs <- table(data[[variable]], useNA = "ifany")
+      
+      # Frecuencia relativa
+      freq_rel <- prop.table(freq_abs) * 100
+      
+      # Moda (categoría más frecuente)
+      moda <- names(freq_abs)[which.max(freq_abs)]
+      
+      # Número de categorías distintas
+      n_categorias <- length(freq_abs)
+      
+      # Crear DataFrame con estadísticas categóricas
+      df_resumen <- data.frame(
+        Variable = variable,
+        `Número de Categorías` = n_categorias,
+        `Moda` = moda,
+        `Frecuencia Absoluta` = paste(names(freq_abs), ":", freq_abs, collapse = ", "),
+        `Frecuencia Relativa (%)` = paste(names(freq_rel), ":", round(freq_rel, 2), collapse = ", ")
+      )
+    } else {
+      next  # Si la variable no es categórica, se omite
+    }
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # 📌 Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+
+}
+
+# Función para procesar los datos
+procesar_datos <- function(data, variables_interes) {
+  # Eliminar valores NA
+  data <- na.omit(data)
+  
+  # Eliminar filas con "Desconocido" en cualquier variable
+  data <- data %>% filter(if_all(everything(), ~ . != "Desconocido"))
+  
+  # Filtrar valores específicos no válidos
+  if ("EDAD_DIAGNOSTICO" %in% colnames(data)) {
+    data <- data %>% filter(EDAD_DIAGNOSTICO != 999)
+  }
+  if ("Nx" %in% colnames(data)) {
+    data <- data %>% filter(Nx != 999)
+  }
+  if ("TAMAÑO" %in% colnames(data)) {
+    data <- data %>% filter(TAMAÑO != 999)
+  }
+  
+  # Imputación de valores perdidos
+  for (var in variables_interes) {
+    if (var %in% colnames(data)) {
+      if (is.numeric(data[[var]])) {
+        data[[var]][is.na(data[[var]])] <- mean(data[[var]], na.rm = TRUE)
+      } else if (is.factor(data[[var]]) || is.character(data[[var]])) {
+        moda <- names(which.max(table(data[[var]])))
+        data[[var]][is.na(data[[var]])] <- moda
+      }
+    }
+  }
+  
+  # Detección y eliminación de valores atípicos
+  for (var in variables_interes) {
+    if (var %in% colnames(data) && is.numeric(data[[var]])) {
+      Q1 <- quantile(data[[var]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data[[var]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      limite_inferior <- Q1 - 1.5 * IQR
+      limite_superior <- Q3 + 1.5 * IQR
+      data <- data %>% filter(data[[var]] >= limite_inferior & data[[var]] <= limite_superior)
+    }
+  }
+  
+  # Seleccionar solo las variables de interés
+  data <- data %>% select(all_of(variables_interes))
+  
+  return(data)
+}
+
+
+# Función para preprocesar el dataset
+preprocesar_datos <- function(data) {
+  
+  # Verificar si las columnas existen antes de modificarlas
+  if ("GRADO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(GRADO_CAT = case_when(
+        GRADO %in% c(1, 2) ~ "1/2",
+        GRADO == 3 ~ "3",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(GRADO_CAT = as.factor(GRADO_CAT))
+  }
+  
+  if ("HISTOLOGIA" %in% colnames(data)) {
+    data <- data %>%
+      mutate(HISTOLOGIA_CAT = case_when(
+        HISTOLOGIA == "DUCTAL" ~ "DUCTAL",
+        TRUE ~ "NO DUCTAL"
+      )) %>%
+      mutate(HISTOLOGIA_CAT = as.factor(HISTOLOGIA_CAT))
+  }
+  
+  if ("Ki67" %in% colnames(data)) {
+    data <- data %>%
+      mutate(Ki67_CAT = case_when(
+        Ki67 <= 14 ~ "<=14",
+        Ki67 > 14 ~ ">14",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(Ki67_CAT = as.factor(Ki67_CAT))
+  }
+  
+  if ("FENOTIPO_IHQ" %in% colnames(data)) {
+    data <- data %>%
+      mutate(FENOTIPO_IHQ_CAT = case_when(
+        FENOTIPO_IHQ %in% c("LUMINAL A", "LUMINAL B") ~ "LUMINAL",
+        FENOTIPO_IHQ %in% c("LUMINAL-HER2", "HER2") ~ "HER2",
+        TRUE ~ "TRIPLE NEGATIVO"
+      )) %>%
+      mutate(FENOTIPO_IHQ_CAT = as.factor(FENOTIPO_IHQ_CAT))
+  }
+  
+  if ("ESTADIO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(ESTADIO_CAT = case_when(
+        ESTADIO %in% c("I", "IA", "IB") ~ "I",
+        ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+        ESTADIO %in% c("III", "IIIA", "IIIB", "IIIC") ~ "III",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(ESTADIO_CAT = as.factor(ESTADIO_CAT))
+  }
+  
+  if ("TIPO_QT_NEOADY_OK" %in% colnames(data)) {
+    data <- data %>%
+      mutate(QT_CAT = case_when(
+        TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE") ~ "antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA", "QUIMIOTERAPIA-INMUNOTERAPIA") ~ "INMUNO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(QT_CAT = as.factor(QT_CAT))
+  }
+  
+  if ("No_ANTIBIOTICOS" %in% colnames(data)) {
+    data <- data %>%
+      mutate(No_ANTIBIOTICOS_CAT = case_when(
+        No_ANTIBIOTICOS == 1 ~ "Una vez",
+        No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(No_ANTIBIOTICOS_CAT = as.factor(No_ANTIBIOTICOS_CAT))
+  }
+  
+  if ("RCB" %in% colnames(data)) {
+    data <- data %>%
+      mutate(RCP = case_when(
+        RCB %in% c("RCB-0", "RCB-I") ~ "SI",
+        RCB %in% c("RCB-II", "RCB-III") ~ "NO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(RCP = as.factor(RCP))
+  }
+  
+  return(data)
+}
+
+detectar_asociacion <- function(data, evento, variable) {
+  
+  # Analizar la relación con la variable evento (RCP)
+  cat("\n📊 Analizando relación entre", evento, "y", variable, "\n")
+  
+  # Convertir la variable 'evento' a factor si no lo es
+  data <- data %>% mutate(across(all_of(evento), as.factor))
+  
+  # Para variables numéricas
+  if (is.numeric(data[[variable]])) {
+    cat("\n📊 (Variable numérica)\n")
+    
+    # Prueba de normalidad con Shapiro-Wilk
+    if (nrow(data) >= 50) {
+      normalidad <- shapiro.test(data[[variable]])
+      es_normal <- normalidad$p.value > 0.05
+      cat("\n📌 Prueba de normalidad (Shapiro-Wilk): p-value =", normalidad$p.value, "\n")
+    } else {
+      es_normal <- FALSE
+    }
+
+    # Si hay exactamente dos grupos en la variable evento, considerar prueba t
+    if (length(levels(data[[evento]])) == 2 && es_normal) {
+      t_test <- t.test(data[[variable]] ~ data[[evento]])
+      cat("\n📌 Resultado de la prueba t de Student (dos grupos, distribución normal):\n")
+      print(t_test)
+    } else {
+      # Si no, usar correlación (Spearman o Pearson según normalidad)
+      metodo_cor <- ifelse(es_normal, "pearson", "spearman")
+      cor_test_result <- cor.test(data[[variable]], as.numeric(as.factor(data[[evento]])), method = metodo_cor)
+      cat("\n📌 Resultado de la prueba de correlación (", metodo_cor, "):\n")
+      print(cor_test_result)
+    }
+    
+    # Visualización con boxplot
+    p <- ggplot(data, aes(x = .data[[evento]], y = .data[[variable]], fill = .data[[evento]])) +
+      geom_boxplot() +
+      theme_minimal() +
+      labs(title = paste("Distribución de", variable, "por", evento), x = evento, y = variable)
+    print(p)
+    
+  } 
+  
+  # Para variables categóricas
+  else if (is.factor(data[[variable]]) || is.character(data[[variable]])) {
+    cat("\n📊 (Variable categórica)\n")
+    
+    # Asegurarse de que ambas variables sean factores
+    data <- data %>%
+      mutate(across(c(all_of(evento), all_of(variable)), as.factor))
+    
+    # Crear tabla de contingencia
+    tabla <- table(data[[evento]], data[[variable]])
+    
+    # Realizar la prueba de Chi-cuadrado o Fisher
+    if (any(tabla < 5)) {
+      test_result <- fisher.test(tabla, simulate.p.value = TRUE)
+      cat("\n📌 Se utilizó la prueba exacta de Fisher debido a frecuencias esperadas menores a 5.\n")
+    } else {
+      test_result <- chisq.test(tabla)
+      cat("\n📌 Se utilizó la prueba de Chi-cuadrado.\n")
+    }
+    
+    # Imprimir el resultado de la prueba
+    print(test_result)
+    
+    # Visualización con mapa de calor
+    p <- ggplot(as.data.frame(tabla), aes(x = Var2, y = Var1, fill = Freq)) +
+      geom_tile() +
+      scale_fill_gradient(low = "white", high = "blue") +
+      theme_minimal() +
+      labs(title = paste("Mapa de calor entre", evento, "y", variable), x = variable, y = evento)
+    
+    print(p)
+  }
+  
+  # Si la variable no es numérica ni categórica
+  else {
+    cat("\n⚠ No se pudo determinar el tipo de variable para el análisis.")
+  }
+}
+
+# Función para realizar regresión logística con matriz de confusión y curva ROC
+regresion_logistica_visual_combinada <- function(data, evento, variables_significativas, top_n = 5, ordenar_por = "auc") {
+  
+  library(tidyverse)
+  library(pROC)
+  library(caret)
+  library(knitr)
+  library(kableExtra)
+  
+  # Limpieza
+  data <- data %>%
+    drop_na(all_of(c(evento, variables_significativas))) %>%
+    mutate(across(all_of(evento), ~factor(.x, levels = c("NO", "SI"))))
+  
+  # Combinaciones
+  combinaciones <- unlist(lapply(1:length(variables_significativas), function(x) {
+    combn(variables_significativas, x, simplify = FALSE)
+  }), recursive = FALSE)
+  
+  resultados <- list()
+  resumen_modelos <- data.frame()
+  
+  for (combinacion in combinaciones) {
+    
+    nombre_modelo <- paste(combinacion, collapse = "_")
+    formula_logistica <- as.formula(paste(evento, "~", paste(combinacion, collapse = " + ")))
+    modelo <- glm(formula_logistica, data = data, family = binomial)
+    
+    prob <- predict(modelo, type = "response")
+    pred <- factor(ifelse(prob > 0.5, "SI", "NO"), levels = c("NO", "SI"))
+    
+    matriz <- confusionMatrix(pred, data[[evento]], positive = "SI")
+    
+    auc_valor <- auc(roc(data[[evento]], prob))
+    exactitud <- matriz$overall["Accuracy"]
+    sensibilidad <- matriz$byClass["Sensitivity"]
+    especificidad <- matriz$byClass["Specificity"]
+    f1 <- matriz$byClass["F1"]
+    
+    # Guardar resumen en un data.frame
+    resumen_modelos <- rbind(
+      resumen_modelos,
+      data.frame(
+        modelo = nombre_modelo,
+        variables = paste(combinacion, collapse = ", "),
+        auc = round(auc_valor, 3),
+        exactitud = round(exactitud, 3),
+        sensibilidad = round(sensibilidad, 3),
+        especificidad = round(especificidad, 3),
+        f1 = round(f1, 3),
+        stringsAsFactors = FALSE
+      )
+    )
+    
+    # Guardar resultados completos
+    resultados[[nombre_modelo]] <- list(
+      resumen_modelo = summary(modelo),
+      
+      tabla_metricas = kable(
+        data.frame(
+          Métrica = c("AUC", "Exactitud", "Sensibilidad", "Especificidad", "F1 Score"),
+          Valor = round(c(auc_valor, exactitud, sensibilidad, especificidad, f1), 3)
+        ),
+        caption = paste("Métricas del modelo:", nombre_modelo),
+        format = "html"
+      ) %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+      
+      matriz_confusion = kable(as.data.frame(matriz$table),
+                               caption = paste("Matriz de Confusión:", nombre_modelo),
+                               format = "html") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+      
+      auc = auc_valor,
+      
+      grafico_roc = ggroc(roc(data[[evento]], prob)) +
+        labs(title = paste("Curva ROC -", nombre_modelo),
+             x = "1 - Especificidad", y = "Sensibilidad") +
+        theme_minimal()
+    )
+  }
+  
+  # Ordenar por métrica elegida y seleccionar los mejores
+  top_modelos <- resumen_modelos %>%
+    arrange(desc(.data[[ordenar_por]])) %>%
+    head(top_n)
+  
+  # Salida
+  list(
+    todos_los_resultados = resultados,
+    resumen_modelos = kable(top_modelos, caption = paste("Top", top_n, "modelos según", ordenar_por), format = "html") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+    top_modelos_info = top_modelos
+  )
+}
+
+
+
+preparar_datos_supervivencia <- function(data) {
+  data %>%
+    mutate(
+      FECHA_INICIO_QT = as.Date(FECHA_INICIO_QT),
+      FECHA_ULTIMO_CONTROL = as.Date(FECHA_ULTIMO_CONTROL),
+      tiempo_sg = as.numeric(difftime(FECHA_ULTIMO_CONTROL, FECHA_INICIO_QT, units = "days")) / 30.44, # en meses
+      estado_SG = ifelse(`ESTADO_ULTIMO_\nCONTROL` == "MCE", 1, 0),
+      ab = factor(ANTIBIOTICO),
+      subtipo = factor(FENOTIPO_IHQ_CAT)
+    ) %>%
+    filter(!is.na(tiempo_sg) & tiempo_sg >= 0)
+}
+
+analisis_supervivencia <- function(data) {
+  necesarias <- c("tiempo_sg", "estado_SG", "ab", "subtipo")
+  faltantes <- necesarias[!necesarias %in% names(data)]
+  if (length(faltantes) > 0) stop(paste("Faltan variables necesarias:", paste(faltantes, collapse = ", ")))
+
+  data <- data %>% drop_na(tiempo_sg, estado_SG, ab, subtipo)
+
+  # Supervivencia global
+  km_total <- survfit(Surv(tiempo_sg, estado_SG) ~ 1, data = data)
+  g1 <- ggsurvplot(km_total, data = data, title = "Supervivencia Global", xlab = "Meses", ylab = "Prob. de supervivencia")
+
+  # Subtipos moleculares
+  km_subtipo <- survfit(Surv(tiempo_sg, estado_SG) ~ subtipo, data = data)
+  g2 <- ggsurvplot(km_subtipo, data = data, pval = TRUE, legend.title = "Subtipo", title = "SG por subtipo tumoral")
+
+  # Uso de antibióticos
+  km_ab <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = data)
+  g3 <- ggsurvplot(km_ab, data = data, pval = TRUE, legend.title = "Antibióticos", title = "SG por uso de antibióticos")
+
+  # Por subtipo y antibióticos
+  g4_list <- list()
+  for (tipo in levels(data$subtipo)) {
+    subdata <- data %>% filter(subtipo == tipo)
+    if (nrow(subdata) >= 10 && length(unique(subdata$ab)) > 1) {
+      fit_sub <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = subdata)
+      g4_list[[tipo]] <- ggsurvplot(fit_sub, data = subdata, pval = TRUE,
+                                    title = paste("SG por AB en subtipo:", tipo),
+                                    legend.title = "Antibióticos")
+    }
+  }
+
+  return(list(
+    global = g1,
+    por_subtipo = g2,
+    por_ab = g3,
+    por_subtipo_y_ab = g4_list
+  ))
+}
+
+
+
+
+```
+
+# Objeto de estudio
+
+Este estudio se enfoca en evaluar el impacto del uso de antibióticos en la respuesta al tratamiento neoadyuvante en pacientes con cáncer de mama. Se investiga cómo la alteración de la microbiota intestinal, inducida por los antibióticos, puede influir en la efectividad de la quimioterapia administrada antes de la cirugía.
+
+A través del análisis de un conjunto de datos clínicos, se busca identificar posibles asociaciones entre el uso de antibióticos y los resultados del tratamiento, medidos mediante la escala RCB (Residual Cancer Burden), la supervivencia y el riesgo de recaída.
+
+Este estudio es relevante porque, aunque se ha explorado en otros tipos de cáncer, el impacto de los antibióticos en la respuesta neoadyuvante del cáncer de mama aún no está bien establecido. El análisis permitirá comprender mejor si el uso de antibióticos afecta la probabilidad de alcanzar una respuesta patológica completa, lo que podría tener implicaciones en la personalización del tratamiento oncológico.
+
+# Estudio completo
+
+## Estadística descriptiva
+
+El conjunto de datos cuenta con las siguientes variables:
+
+```{r, eval=TRUE}
+muestra_700_UGC_perdidos <- read_excel("muestra_700_UGC_perdidos.xlsx")
+muestra_700_UGC_perdidos <- muestra_700_UGC_perdidos %>%
+  mutate_if(is.character, as.factor)
+muestra_700_UGC_perdidos$Tn <- factor(muestra_700_UGC_perdidos$Tn)
+muestra_700_UGC_perdidos$GRADO <- factor(muestra_700_UGC_perdidos$GRADO)
+muestra_700_UGC_perdidos$Nx <- factor(muestra_700_UGC_perdidos$Nx)
+skim_without_charts(muestra_700_UGC_perdidos)
+```
+
+### Variables de interés de estudio
+
+De todas estas variables encontradas en el conjunto, se va a proceder con el estudio de las siguientes:
+
+-   
+
+    EDAD_DIAGNOSTICO
+
+    :   Edad en años en la que se realizó el diagnóstico del cáncer.
+
+-   
+
+    ESTADO_MENOPAUSICO
+
+    :   Estado menopáusico de la paciente al momento del diagnóstico (premenopáusica, menopáusica o desconocido).
+
+-   
+
+    HISTOLOGIA
+
+    :   Tipo histológico del tumor, según clasificación patológica.
+
+-   
+
+    GRADO
+
+    :   Grado histológico del tumor.
+
+-   
+
+    KI67_DICOT
+
+    :   Expresión del marcador de proliferación celular Ki-67.
+
+-   
+
+    FENOTIPO_IHQ
+
+    :   Clasificación del tumor según inmunohistoquímica.
+
+-   
+
+    TAMAÑO
+
+    :   Tamaño del tumor en centímetros.
+
+-   
+
+    Tn
+
+    :   Clasificación T del tumor.
+
+-   
+
+    Nx
+
+    :   Estado ganglionar.
+
+-   
+
+    ESTADIO
+
+    :   Estadio clínico del cáncer.
+
+-   
+
+    TIPO_CIRUGIA
+
+    :   Tipo de cirugía realizada.
+
+-   
+
+    TIPO_QT_NEOADY_OK
+
+    :   Tipo de quimioterapia neoadyuvante administrada.
+
+-   
+
+    RCP
+
+    :   Indica si hubo una respuesta completa patológica tras el tratamiento neoadyuvante.
+
+-   
+
+    HT_ADY_OK
+
+    :   Indica si la paciente recibió hormonoterapia adyuvante y el tipo de tratamiento.
+
+-   
+
+    RE Y RP
+
+    :   Estado de los receptores hormonales de estrógeno (RE) y progesterona (RP) en el tumor.
+
+-   
+
+    RETRASOS
+
+    :   Indica si hubo o no retrasos.
+
+Para el **análisis univariante** de estas variables, se ha implementado una función que **automatiza** el proceso para las variables de interés del conjunto. De esta forma, conseguimos conocer qué variables son numéricas y cuáles son categóricas. También, se muestran resúmenes estadísticos de cada una de las variables junto a representaciones gráficas.
+
+```{r}
+# 📌 Ejemplo de uso
+variables_a_analizar <- c("EDAD_DIAGNOSTICO", "ESTADO_MENOPAUSICO", "HISTOLOGIA", "GRADO", "KI67_DICOT", "Ki67", "FENOTIPO_IHQ", "TAMAÑO", "Tn", "Nx", "ESTADIO", "TIPO_CIRUGIA", "TIPO_QT_NEOADY_OK", "RCB", "HT_ADY_OK", "RE", "RP", "RETRASOS", "No_ANTIBIOTICOS", "FECHA_ULTIMO_CONTROL", "FECHA_INICIO_QT", "ESTADO_ULTIMO_\nCONTROL", "ANTIBIOTICO")
+resultados <- analizar_variables(muestra_700_UGC_perdidos, variables_a_analizar)
+
+# 📊 Ver los resultados
+Numericas <- names(resultados$Numericas)  # Ver nombres de variables numéricas
+Categoricas <- names(resultados$Categoricas)  # Ver nombres de variables categóricas
+
+```
+
+Una vez conocidas las variables y el tipo de las mismas se va a proceder con el análisis estadístico para cada una.
+
+### Variables numéricas {.tabset .tabset-fade .tabset-pills}
+
+En el siguiente dataset puede ver las medidas de tendencia central junto a los cuartiles importantes para cada una de las variables numéricas.
+
+```{r}
+resultados_multi <- analizar_variables_df(muestra_700_UGC_perdidos, Numericas)
+
+# 📌 Mostrar tabla interactiva
+datatable(resultados_multi, options = list(pageLength = 10))
+```
+
+Para algo más visual de cada una de estas variables puede clickar sobre cada una de las pestañas que se encuentran a continuación.
+
+#### EDAD_DIAGNOSTICO
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "EDAD_DIAGNOSTICO")
+```
+
+#### TAMAÑO
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TAMAÑO")
+```
+
+#### RE
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RE")
+```
+
+#### RP
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RP")
+```
+
+### Variables categóricas {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+# Análisis de variables categóricas
+resultados_categoricos <- analizar_variables_categoricas(muestra_700_UGC_perdidos, Categoricas)
+
+# Mostrar los resultados
+datatable(resultados_categoricos, options = list(pageLength = 3))
+
+```
+
+#### ESTADO_MENOPAUSICO
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "ESTADO_MENOPAUSICO")
+```
+
+#### HISTOLOGIA
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "HISTOLOGIA")
+```
+
+#### GRADO
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "GRADO")
+```
+
+#### KI67_DICOT
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "KI67_DICOT")
+```
+
+#### FENOTIPO_IHQ
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "FENOTIPO_IHQ")
+```
+
+#### Tn
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "Tn")
+```
+
+#### Nx
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "Nx")
+```
+
+#### ESTADIO
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "ESTADIO")
+```
+
+#### TIPO_CIRUGIA
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TIPO_CIRUGIA")
+```
+
+#### TIPO_QT_NEOADY_OK
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TIPO_QT_NEOADY_OK")
+```
+
+#### RCB
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RCB")
+```
+
+#### HT_ADY_OK
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "HT_ADY_OK")
+```
+
+#### RETRASOS
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RETRASOS")
+```
+
+### Limpieza y filtrado de datos {.tabset .tabset-fade .tabset-pills}
+
+Se va a proceder con la detección e imputación de valores perdidos, así como la identificación de valores atípicos. También, se realizará un preprocesamiento de los datos que conlleva una categorización y recodificación de variables para estratificar adecuadamente la población de pacientes.
+
+```{r}
+# Llamar la función y procesar el dataset
+df_procesado <- procesar_datos(muestra_700_UGC_perdidos, variables_a_analizar)
+
+# Mostrar el dataset procesado
+skim_without_charts(df_procesado)
+```
+
+### Categorización y recodificación de variables
+
+```{r}
+dataset_recodificado <- preprocesar_datos(df_procesado)
+
+skim_without_charts(dataset_recodificado)
+```
+
+## Análisis de asociación/correlación {.tabset .tabset-fade .tabset-pills}
+
+Para evaluar la posible relación entre la respuesta completa patológica (RCP) y las características de los pacientes, se emplearán análisis estadísticos adecuados a la naturaleza de cada variable. En el caso de las variables cualitativas, como el tipo de tratamiento o el estadio del tumor, se utilizarán pruebas diseñadas para comparar proporciones entre distintos grupos, como la prueba de Chi-cuadrado o, en situaciones donde el tamaño de la muestra sea reducido, la prueba exacta de Fisher. Estas herramientas permiten determinar si existen diferencias significativas en la distribución de estas características entre los pacientes que lograron o no una RCP.
+
+Para las variables cuantitativas, como la edad del paciente o el índice de proliferación tumoral Ki67, se aplicarán pruebas que permitan evaluar diferencias en valores numéricos entre los grupos analizados. La prueba t de Student se empleará para comparar los valores promedio de estas variables entre los pacientes con y sin RCP, mientras que los coeficientes de correlación de Pearson o Spearman ayudarán a medir la intensidad y dirección de la relación entre estas características y la RCP.
+
+A través de estos análisis se buscarán patrones o tendencias que puedan sugerir una asociación entre las características clínicas y patológicas de los pacientes y su respuesta al tratamiento. Los resultados obtenidos contribuirán a una mejor comprensión de los factores que podrían influir en la probabilidad de alcanzar una RCP, proporcionando información valiosa para optimizar estrategias terapéuticas y mejorar la toma de decisiones clínicas.
+
+### EDAD_DIAGNOSTICO
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","EDAD_DIAGNOSTICO")
+```
+
+### ESTADO_MENOPAUSICO
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","ESTADO_MENOPAUSICO")
+```
+
+### TAMAÑO
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","TAMAÑO")
+```
+
+### Tn
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","Tn")
+```
+
+### Nx
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","Nx")
+```
+
+### TIPO_CIRUGIA
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","TIPO_CIRUGIA")
+```
+
+### HT_ADY_OK
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","HT_ADY_OK")
+```
+
+### RE
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","RE")
+```
+
+### RP
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","RP")
+```
+
+### GRADO_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","GRADO_CAT")
+```
+
+### HISTOLOGIA_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","HISTOLOGIA_CAT")
+```
+
+### KI67_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","Ki67_CAT")
+```
+
+### FENOTIPO_IHQ_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","FENOTIPO_IHQ_CAT")
+```
+
+### ESTADIO_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","ESTADIO_CAT")
+```
+
+### QT_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","QT_CAT")
+```
+
+### No_ANTIBIOTICOS_CAT
+
+```{r}
+detectar_asociacion(dataset_recodificado, "RCP","No_ANTIBIOTICOS_CAT")
+```
+
+## Análisis multivariante
+
+Se utilizarán métodos estadísticos avanzados para analizar cómo se relacionan varias variables entre sí y cuáles de ellas tienen mayor influencia sobre la probabilidad de que ocurra una respuesta completa patológica (RCP). En particular, se aplicará la regresión logística, una técnica que permite predecir la probabilidad de que ocurra un evento (en este caso, la RCP) a partir de otras variables. Luego, se evaluará la importancia de cada una de estas variables en el modelo, analizando factores como la significancia de los coeficientes (qué tan fuertes son las relaciones) y la calidad del modelo en general para ver cuán bien está prediciendo la RCP.
+
+```{r}
+# Lista de variables independientes
+variables_significativas <- c("EDAD_DIAGNOSTICO", "HT_ADY_OK", "RE", "RP", "FENOTIPO_IHQ_CAT", "TAMAÑO", "QT_CAT", "Ki67_CAT")
+
+variables_no_significativas <- c("No_ANTIBIOTICOS_CAT", "TIPO_CIRUGIA", "ESTADIO_CAT", "Tn", "Nx", "ESTADO_MENOPAUSICO", "GRADO_CAT", "HISTOLOGIA_CAT")
+
+variables_mixtas <- c("HT_ADY_OK", "RE", "RP", "FENOTIPO_IHQ_CAT", "TAMAÑO", "Ki67_CAT", "TIPO_CIRUGIA", "ESTADIO_CAT", "Tn", "Nx", "ESTADO_MENOPAUSICO", "GRADO_CAT")
+
+# Llamada a la función
+resultados_mejores <- regresion_logistica_visual_combinada(data = dataset_recodificado, evento = "RCP", variables_significativas = variables_significativas,3,"auc")
+
+resultados_mejores$resumen_modelos
+
+# Curva ROC del mejor modelo
+resultados_mejores$todos_los_resultados[[resultados_mejores$top_modelos_info$modelo[1]]]$grafico_roc
+
+resultados_mejores$todos_los_resultados[[resultados_mejores$top_modelos_info$modelo[1]]]$matriz_confusion
+
+# Llamada a la función
+resultados_peores <- regresion_logistica_visual_combinada(data = dataset_recodificado, evento = "RCP", variables_significativas = variables_no_significativas,3,"auc")
+
+resultados_peores$resumen_modelos
+
+# Curva ROC del mejor modelo
+resultados_peores$todos_los_resultados[[resultados_peores$top_modelos_info$modelo[1]]]$grafico_roc
+
+resultados_peores$todos_los_resultados[[resultados_peores$top_modelos_info$modelo[1]]]$matriz_confusion
+
+# Llamada a la función
+resultados_mixtos <- regresion_logistica_visual_combinada(data = dataset_recodificado, evento = "RCP", variables_significativas = variables_mixtas,3,"auc")
+
+resultados_mixtos$resumen_modelos
+
+# Curva ROC del mejor modelo
+resultados_mixtos$todos_los_resultados[[resultados_mixtos$top_modelos_info$modelo[1]]]$grafico_roc
+
+resultados_mixtos$todos_los_resultados[[resultados_mixtos$top_modelos_info$modelo[1]]]$matriz_confusion
+
+```
+
+## Análisis de supervivencia
+
+Se llevó a cabo un análisis de supervivencia global (SG) con el objetivo de evaluar el impacto del uso de antibióticos en pacientes con cáncer de mama tratadas con quimioterapia neoadyuvante. El tiempo de seguimiento se calculó como la diferencia en meses entre la fecha de inicio del tratamiento (FECHA_INICIO_QT) y la fecha del último control (FECHA_ULTIMO_CONTROL). El evento de interés se definió como el fallecimiento de la paciente, codificado a partir de la variable ESTADO_ULTIMO_CONTROL (estado_SG = 1 si el estado es "MCE", y 0 en caso contrario). Se estimaron curvas de Kaplan-Meier para evaluar la supervivencia global en el total de pacientes y se compararon las curvas según los subtipos moleculares del tumor (Luminal, HER2+, Triple Negativo), así como según el uso de antibióticos durante el tratamiento. Para evaluar diferencias estadísticas entre grupos se aplicó el test de log-rank. Finalmente, se repitió el análisis de supervivencia estratificado por subtipo molecular, comparando dentro de cada subtipo a las pacientes que recibieron antibióticos frente a las que no, con el fin de explorar si el efecto de los antibióticos sobre la supervivencia varía según el tipo biológico del cáncer.
+
+```{r}
+# Preparar los datos
+datos_preparados <- preparar_datos_supervivencia(dataset_recodificado)
+
+# Ejecutar el análisis
+resultados_sg <- analisis_supervivencia(datos_preparados)
+
+# Mostrar los gráficos
+resultados_sg$global
+resultados_sg$por_subtipo
+resultados_sg$por_ab
+
+# Mostrar resultados por subtipo
+
+resultados_sg$por_subtipo_y_ab[["Luminal"]]
+resultados_sg$por_subtipo_y_ab[["HER2"]]
+resultados_sg$por_subtipo_y_ab[["Triple Negativo"]]
+```
+
+# Resumen y resultados destacables por apartado
+
+*En este apartado se van a comentar aquellos aspectos que han sido determinantes en el estudio al igual que se va a resumir todo lo que se ha realizado de una manera más visual*
+
+## Estadística descriptiva
+
+Entre todas las variables disponibles en el conjunto de datos, se han seleccionado las siguientes por su relevancia para el análisis.
+
+::: panel-tabset
+## EDAD_DIAGNOSTICO
+
+Edad en años en la que se realizó el diagnóstico del cáncer.
+
+## ESTADO_MENOPAUSICO
+
+Estado menopáusico de la paciente al momento del diagnóstico (premenopáusica, menopáusica o desconocido).
+
+## HISTOLOGIA
+
+Tipo histológico del tumor, según clasificación patológica.
+
+## GRADO
+
+Grado histológico del tumor.
+
+## KI67_DICOT
+
+Expresión del marcador de proliferación celular Ki-67.
+
+## FENOTIPO_IHQ
+
+Clasificación del tumor según inmunohistoquímica.
+
+## TAMAÑO
+
+Tamaño del tumor en centímetros.
+
+## Tn
+
+Clasificación T del tumor.
+
+## Nx
+
+Estado ganglionar.
+
+## ESTADIO
+
+Estadio clínico del cáncer.
+
+## TIPO_CIRUGIA
+
+Tipo de cirugía realizada.
+
+## TIPO_QT_NEOADY_OK
+
+Tipo de quimioterapia neoadyuvante administrada.
+
+## RCP
+
+Respuesta completa patológica tras el tratamiento.
+
+## HT_ADY_OK
+
+Hormonoterapia adyuvante recibida.
+
+## RE Y RP
+
+Receptores hormonales de estrógeno (RE) y progesterona (RP).
+
+## RETRASOS
+
+Indica si hubo o no retrasos.
+:::
+
+En primer lugar se ha procedido con el estudio individual de cada **variable de interés** teniendo en cuenta tanto el tipo de variable como bien su resumen estadístico que se ha acompañado con representaciones gráficas.
+
+Las **variables numéricas** son las siguientes.
+
+```{r}
+DT::datatable(resultados_multi,
+              extensions = 'Buttons',
+              options = list(
+                dom = 'Bfrtip',
+                buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                pageLength = 10,
+                scrollY = "400px",
+                scrollCollapse = TRUE,
+                paging = TRUE
+              ),
+              rownames = FALSE,
+              class = "display nowrap"
+) %>%
+  DT::formatStyle(
+    columns = names(resultados_multi),
+    backgroundColor = 'skyblue'
+  )
+
+```
+
+Por otro lado, las **variables categóricas** son las siguientes.
+
+```{r}
+DT::datatable(resultados_categoricos,
+              extensions = 'Buttons',
+              options = list(
+                dom = 'Bfrtip',
+                buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                pageLength = 10,
+                scrollY = "400px",
+                scrollCollapse = TRUE,
+                paging = TRUE
+              ),
+              rownames = FALSE,
+              class = "display nowrap"
+) %>%
+  DT::formatStyle(
+    columns = names(resultados_categoricos),
+    backgroundColor = 'skyblue'
+  )
+```
+
+Algunos resultados visuales destacables de todas estas variables de interés son de **RE**, **TAMAÑO**, **ESTADO_MENOPAUSICO**, **HISTOLOGIA** y **KI67_DICOT**.
+
+::: {style="display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;"}
+![Resultados de RE](Images/re.png){alt="Imagen 1" style="border-radius: 8px;" width="350"} ![TAMAÑO](Images/tamano.png){alt="Imagen 2" style="border-radius: 8px;" width="350"} ![ESTADO MENOPAUSICO](Images/estado_menopausico.png){alt="Imagen 3" style="border-radius: 8px;" width="350"} ![HISTOLOGIA](Images/histologia.png){alt="Imagen 4" style="border-radius: 8px;" width="350"} ![KI67](Images/ki67dicot.png){alt="Imagen 5" style="border-radius: 8px;" width="350"}
+:::
+
+*Estas imágenes se han generado gracias a la ayuda de una función automatizada que creaba resultados gráficos de las variables en función del tipo de la variable.*
+
+Para la variable **TAMAÑO** cabe destacar que la ingente cantidad de valores atípicos suponía que el histograma resultase algo impreciso en la muestra de resultados. Para esto tras la limpieza que tiene lugar en el siguiente apartado conseguimos el siguiente histograma.
+
+```{r}
+visualizar_variable(dataset_recodificado, "TAMAÑO")
+```
+
+Ahora si podemos visualizar con una mayor claridad el "tamaño estándar" que prevalece y que es de 3 mm. También, podemos ver que el tipo histológico de mayor frecuencia en la variable **HISTOLOGIA** es *Ductal*. Además, se ve que la frecuencia de pacientes menopáusicas y premenopáusicas son similares, sin embargo, el marcador *AIP* es más frecuente que *BIP*.
+
+Las funciones utilizadas en este apartado son:\
+- [Analizar tipo de variables](#Analizarvariables)
+
+\- [Resumen estadístico de variables numéricas](#Generalnumerico)
+
+\- [Resumen estadístico de variables categóricas](#Generalcategorico)
+
+\- [Resultados visuales de cualquier variable](#Resultadosvisuales)
+
+## Limpieza, filtrado, categorización y recodificación
+
+Una vez revisadas todas las variables relevantes, se eliminaron tanto los valores atípicos como los datos que estaban ausentes o incompletos. De esta forma pasamos de 700 muestras a 217.
+
+Como paso final, se realizará el preprocesamiento de los datos, que consistirá en la categorización y recodificación de diversas variables con el objetivo de estratificar adecuadamente a la población de estudio.
+
+Se han creado variables categóricas nuevas a partir de las originales para simplificar la interpretación. Los criterios utilizados han sido:
+
+-   **GRADO_CAT**: agrupación en dos categorías:
+    -   `1/2` → Grado 1 o 2
+    -   `3` → Grado 3
+-   **HISTOLOGIA_CAT**:
+    -   `DUCTAL` → Tumores ductales
+    -   `NO DUCTAL` → Todos los demás tipos histológicos
+-   **Ki67_CAT**:
+    -   `<=14` → Marcador Ki-67 menor o igual a 14%
+    -   `>14` → Mayor a 14%
+-   **FENOTIPO_IHQ_CAT**:
+    -   `LUMINAL` → Fenotipos Luminal A o B
+    -   `HER2` → Tumores HER2 o Luminal-HER2
+    -   `TRIPLE NEGATIVO` → Resto
+-   **ESTADIO_CAT**:
+    -   `I` → Estadio I, IA, IB
+    -   `II` → II, IIA, IIB
+    -   `III` → III, IIIA, IIIB, IIIC
+-   **QT_CAT**:
+    -   `NO antiHER2` → Quimioterapia sin antiHER2
+    -   `antiHER2` → Combinación con fármacos antiHER2
+    -   `INMUNO` → Incluye inmunoterapia
+-   **No_ANTIBIOTICOS**:
+    -   `Una vez` → 1 ciclo antibiótico
+    -   `Dos veces o más` → 2 o más ciclos
+-   **RCP**: respuesta completa patológica calculada a partir de RCB:
+    -   `SI` → RCB-0 o RCB-1
+    -   `NO` → RCB-2 o RCB-3
+
+A continuación, puede observar un breve resumen de los cambios logrados.
+
+```{r}
+ comparativa <- data.frame( Característica = c("Número de filas", "Número de columnas", "Variables tipo factor", "Variables tipo numeric", "Variables agrupadas", "Datos perdidos", "Valores atípicos", "Recodificación de variables"), Original = c(700, 28, 22, 6, "Ninguna", "Presentes", "Presentes", "No"), Procesado = c(217, 31, 25, 6, "Ninguna", "Eliminados / imputados", "Eliminados", "Sí") )
+
+kable(comparativa, caption = "Comparación entre dataset original y procesado")
+```
+
+Las funciones utilizadas en este apartado son:\
+- [Detectar valores perdidos, imputarlos y detectar valores atípicos](#Imputacion)
+
+\- [Categorizar y recodificar las variables para estratificar adecuadamente](Categorizacion)
+
+## Análisis de asociación/correlación
+
+Se analizaron las posibles asociaciones entre la respuesta completa patológica (RCP) y las distintas variables clínicas y terapéuticas del estudio. Para ello, se aplicaron pruebas estadísticas adecuadas según el tipo de variable, identificándose relaciones significativas en varios casos. Este análisis permitió detectar patrones que podrían estar relacionados con una mejor o peor respuesta al tratamiento. Además, se implementó una función automatizada que facilitó el análisis sistemático entre pares de variables, permitiendo construir una matriz de correlación que resume visualmente las principales asociaciones observadas en la cohorte. Cabe destacar que aquellas variables que **fueron anteriormente recodificadas**, son las que se han utilizado en este caso para el análisis.
+
+Tras el estudio, se han comprobado que de las **16** variables analizadas, solamente la mitad constituye el grupo de variables con mayor evidencia estadística. Entre estas encontramos **FENOTIPO_IHQ_CAT**, **HT_ADY_OK**, **QT_CAT**, **RE**...
+
+Por otro lado, en el grupo que incluye a las variables que no parecen presentar relación significativa con la variable evento están **TIPO_CIRUGIA**, **GRADO_CAT**, **ESTADO_MENOPAUSICO**, **No_ANTIBIOTICOS_CAT**...
+
+Es cierto que estos resultados pueden verse perjudicados por el uso de Fisher (simulado) dado que suponía mucho esfuerzo para el equipo y el programa el realizar el test completo. Por ende, aquellas variables que se consideren convenientes van a ser utilizadas para el análisis multivariante.
+
+Aquí se pueden ver algunas gráficas visuales que representan las distintas asociaciones.
+
+::: {style="display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;"}
+![Imagen 1](Images/fenotipo.png){alt="Imagen 1" style="border-radius: 8px;" width="350"} ![Imagen 2](Images/qt.png){alt="Imagen 2" style="border-radius: 8px;" width="350"} ![Imagen 3](Images/tipocirugia.png){alt="Imagen 3" style="border-radius: 8px;" width="350"} ![Imagen 4](Images/noantibioticos.png){alt="Imagen 4" style="border-radius: 8px;" width="350"}
+:::
+
+Dados estos mapas de calor podemos comprobar, por ejemplo, que el tipo de fenotipo *Luminal* se relaciona para los casos negativos de la variable de evento, mientras que *Her2* se relaciona con los casos positivos. También, vemos como para el tipo de cirugía no está tan claro la asociación dado que se da de forma proporcional la misma situación tanto para las *cirugías conservadoras* como *radicales*.
+
+Para resumir los resultados obtenidos puede consultar las siguientes tablas que representan a las variables con asociación significativa en primer lugar y sin en segundo lugar.
+
+```{r}
+kable(
+  data.frame(
+    Variable = c(
+      "FENOTIPO_IHQ_CAT", "HT_ADY_OK", "QT_CAT",
+      "RE", "RP", "Ki67_CAT", "EDAD_DIAGNOSTICO", "TAMAÑO"
+    ),
+    Tipo = c(
+      "Categórica", "Categórica", "Categórica",
+      "Numérica", "Numérica", "Categórica", "Numérica", "Numérica"
+    ),
+    `Test estadístico` = c(
+      "Chi-cuadrado", "Fisher", "Fisher",
+      "Spearman", "Spearman", "Fisher", "Spearman", "Spearman"
+    ),
+    `p-valor` = c(
+      "2.4e-07", "0.0005", "0.0005",
+      "1.18e-06", "0.0003", "0.0152", "0.0109", "0.015"
+    ),
+    Asociación = c(
+      "Fuerte", "Fuerte", "Fuerte",
+      "Negativa (rho = -0.32)", "Negativa (rho = -0.24)", 
+      "Positiva (OR ≈ 3.81)", "Negativa (rho = -0.17)", "Negativa (rho = -0.16)"
+    )
+  ),
+  caption = "Tabla 1. Variables con asociación estadísticamente significativa con RCP.",
+  align = "lcccl"
+)
+
+kable(
+  data.frame(
+    Variable = c(
+      "No_ANTIBIOTICOS_CAT", "TIPO_CIRUGIA", "ESTADIO_CAT", "Tn", 
+      "Nx", "ESTADO_MENOPAUSICO", "GRADO_CAT", "HISTOLOGIA_CAT"
+    ),
+    Tipo = c(
+      "Categórica", "Categórica", "Categórica", "Categórica", 
+      "Categórica", "Categórica", "Categórica", "Categórica"
+    ),
+    `Test estadístico` = c(
+      "Chi-cuadrado", "Fisher", "Chi-cuadrado", "Chi-cuadrado",
+      "Fisher", "Fisher", "Chi-cuadrado", "Chi-cuadrado"
+    ),
+    `p-valor` = c(
+      "1", "0.884", "0.560", "0.411", 
+      "0.137", "0.103", "0.263", "0.195"
+    ),
+    Comentario = c(
+      "Sin asociación alguna", "Muy baja asociación", "Baja", "Baja",
+      "Baja", "Ligeramente no significativa", "No significativa", "No significativa"
+    )
+  ),
+  caption = "Tabla 2. Variables sin asociación estadísticamente significativa con RCP.",
+  align = "lcccl"
+)
+```
+
+La función utilizada en este apartado es:\
+- [Analizar asociación/correlación entre variable evento y otra](#Asociacion)
+
+## Análisis multivariante
+
+Se emplearán técnicas de análisis multivariante, concretamente regresión logística, con el objetivo de identificar los factores que se asocian de forma independiente con la obtención de respuesta completa patológica (RCP). Este modelo permitirá estimar la probabilidad de RCP en función de diversas variables clínicas y terapéuticas. Se evaluará la significancia estadística de cada predictor, así como la capacidad explicativa del modelo mediante métricas como la bondad de ajuste y la discriminación, lo que permitirá valorar su utilidad en la predicción del evento.
+
+Tras haber creado modelos como uno con las variables consideradas **altamente significativas**, otro con las **no significativas** u otro con variables mezcladas, se ha considerado el más óptimo aquel que contenía una mezcla de ambos grupos. La función automatizada que se ha implementado, estudiaba recombinaciones de variables para crear modelos diferentes y se acababa quedando con los 3 mejores modelos por el argumento dado que especificaba el número de mejores modelos y según el *AUC*.
+
+El mejor modelo se compone de las variables **HT_ADY_OK**, **RE**, **RP**, **FENOTIPO_IHQ_CAT**, **TAMAÑO**, **Ki67_CAT**, **ESTADIO_CAT**, **Tn**, **Nx** y **GRADO_CAT**.
+
+```{r}
+mejores_modelos <- data.frame(
+  Modelo = c("Accuracy247", "Accuracy253", "Accuracy4027"),
+  Variables = c(
+    "EDAD_DIAGNOSTICO, HT_ADY_OK, RE, RP, FENOTIPO_IHQ_CAT, TAMAÑO, Ki67_CAT",
+    "TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT",
+    "HT_ADY_OK, RE, RP, FENOTIPO_IHQ_CAT, TAMAÑO, Ki67_CAT, ESTADIO_CAT, Tn, Nx, GRADO_CAT"
+  ),
+  AUC = c(0.845, 0.741, 0.854),
+  Exactitud = c(0.759, 0.702, 0.774),
+  Sensibilidad = c(0.600, 0.406, 0.624),
+  Especificidad = c(0.863, 0.855, 0.871),
+  F1 = c(0.662, 0.481, 0.684)
+)
+
+kable(mejores_modelos, caption = "Resumen de los mejores modelos de regresión logística", format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+```{r}
+# Curva ROC del mejor modelo
+resultados_mixtos$todos_los_resultados[[resultados_mixtos$top_modelos_info$modelo[1]]]$grafico_roc
+
+resultados_mixtos$todos_los_resultados[[resultados_mixtos$top_modelos_info$modelo[1]]]$matriz_confusion
+```
+
+Con un *0.854* de **AUC**, se explica que el modelo distingue muy bien entre pacientes que tuvieron RCP y los que no. También, el *77.4*% de las predicciones totales son correctas. Reconoce mejor a los pacientes que **no** tuvieron RCP que los que **sí** y esto puede deberse al muy pequeño desequilibro de clases en la variable evento ya que esta tiene *132* casos de **NO** frente a *85*casos de **SI**. Finalmente, al no ser grande el desequilibrio, el **F1-score** con un valor de *0.684* resulta mostrar un buen equilibrio entre **exactitud** y **sensibilidad**.
+
+La función utilizada en este apartado es:\
+- [Realizar la regresión logística](#Regresion)
+
+## Análisis de supervivencia
+
+En este estudio se analizó si el uso de antibióticos durante el tratamiento influye en la supervivencia de pacientes con cáncer de mama que recibieron quimioterapia antes de la cirugía. Para ello, se calculó cuánto tiempo vivieron las pacientes desde el inicio del tratamiento hasta el último seguimiento, y se comparó la supervivencia entre distintos grupos. Se estudiaron tanto los diferentes tipos biológicos del tumor como si las pacientes habían tomado antibióticos o no. Además, se exploró si el efecto de los antibióticos sobre la supervivencia cambiaba según el tipo de tumor. Para las comparaciones se utilizaron métodos estadísticos específicos que permiten visualizar y contrastar las diferencias en supervivencia entre grupos.\
+
+![Supervivencia Global](Images/supGlobal.png "Supervivencia Global"){fig-align="center"}
+
+La probabilidad de supervivencia en la cohorte disminuye de manera progresiva y acentuada, especialmente a partir de los 270 meses de seguimiento, mostrando una tendencia que se aproxima a un descenso exponencial. Sin embargo, entre los 100 y 200 meses, la probabilidad aún se mantiene relativamente alta, oscilando entre 1 y 0.75.
+
+![Supervivencia por Subtipo](Images/subSubtipo.png){fig-align="center"}
+
+En el análisis por subtipos moleculares, las pacientes con tumores **Luminal** experimentan una disminución brusca en la probabilidad de supervivencia alrededor de los 300 meses. En contraste, el subtipo **HER2+** mantiene una probabilidad de supervivencia elevada, con valores que permanecen entre 1 y 0.75 a lo largo del tiempo analizado. Por su parte, el subtipo **Triple Negativo** muestra una caída más pronunciada en la probabilidad a partir de los 100 meses, aunque esta se mantiene por encima de 0.75 hasta aproximadamente los 250 meses, momento en el que desciende hasta 0.5 y alcanza un valor ligeramente superior a 0.25 en torno a los 300 meses.
+
+![Supervivencia por uso de antibióticos](Images/subUsoAnt.png){fig-align="center"}
+
+En cuanto al uso de antibióticos, se observa que las pacientes que **no recibieron antibióticos** mantienen una probabilidad de supervivencia relativamente estable, que no desciende por debajo de 0.6 durante el período de seguimiento. En cambio, aquellas que **sí recibieron antibióticos** presentan una disminución gradual en la probabilidad de supervivencia, que se acentúa cerca de los 300 meses, momento en el cual la probabilidad cae bruscamente hasta alcanzar un valor próximo a 0.
+
+![Supervivencia por uso de antibióticos al tener HER2+](Images/subAntHer2.png){fig-align="center"}
+
+Al analizar específicamente el subtipo **HER2+**, se observa que las pacientes que **no fueron tratadas con antibióticos** mantienen una probabilidad de supervivencia constante de 1 durante todo el seguimiento. Por otro lado, aquellas que **sí recibieron antibióticos** muestran una probabilidad algo menor, situándose por encima de 0.75 antes de los 200 meses y manteniéndose estable en torno a 0.75 a partir de ese punto.
+
+Las funciones utilizadas en este apartado son:\
+- [Preparar los datos para supervivencia](#Preparar)
+
+\- [Realizar el análisis de supervivencia](#Supervivencia)
+
+# Conclusiones finales
+
+Los resultados obtenidos en este análisis de supervivencia sugieren que el uso de antibióticos durante el tratamiento con quimioterapia neoadyuvante podría estar asociado a una menor probabilidad de supervivencia en pacientes con cáncer de mama, especialmente en determinados subgrupos biológicos como HER2+ y triple negativo. Estos hallazgos refuerzan la hipótesis de que la alteración de la microbiota —potencialmente inducida por la administración de antibióticos— podría tener un impacto relevante en la eficacia de las terapias oncológicas y, en última instancia, en la evolución clínica de las pacientes.
+
+Además, las diferencias observadas entre subtipos moleculares subrayan la necesidad de considerar el perfil biológico del tumor a la hora de valorar el riesgo asociado al uso de antibióticos durante el tratamiento oncológico. Esto sugiere que las decisiones clínicas relacionadas con la prescripción de antimicrobianos deberían realizarse con cautela, y en lo posible bajo un criterio de indicación estrictamente necesario, especialmente en el contexto de la quimioterapia.
+
+Por otro lado, estos resultados también ponen de relieve la importancia de integrar el control de infecciones, la evaluación del estado inmunológico y la vigilancia de la microbiota intestinal como factores relevantes en el manejo integral de las pacientes con cáncer. En un futuro, este enfoque podría abrir la puerta a estrategias de soporte que busquen minimizar el impacto de los antibióticos o restaurar la microbiota, como el uso de probióticos o transplantes fecales, siempre dentro de un marco de evidencia científica robusta.
+
+Finalmente, aunque este análisis no permite establecer relaciones causales definitivas, sí plantea interrogantes clínicamente relevantes que justifican la necesidad de realizar estudios prospectivos que analicen de forma más controlada el impacto de los antibióticos en la supervivencia, considerando la biología del tumor, las comorbilidades y la composición de la microbiota como posibles factores moduladores.
+
+# Librerias y funciones utilizadas {.tabset .tabset-fade .tabset-pills}
+
+::: {.alert .alert-info}
+| Librería   | Motivo de la adición                                                                                                                                     |
+|:---------------------------------------|:-------------------------------|
+| knitr      | Crea reportes dinámicos combinando código y resultados                                                                                                   |
+| readxl     | Lee archivos Excel                                                                                                                                       |
+| skimr      | Proporciona resúmenes rápidos de datasets                                                                                                                |
+| dplyr      | Facilita la manipulación de datos                                                                                                                        |
+| DT         | Crea tablas interactivas para explorar datos                                                                                                             |
+| ggplot2    | Genera gráficos avanzados y personalizables                                                                                                              |
+| gridExtra  | Organiza múltiples gráficos en una sola página                                                                                                           |
+| tidyr      | Trata valores perdidos                                                                                                                                   |
+| reshape2   | Reorganiza el dataframe                                                                                                                                  |
+| stats      | Realiza análisis estadísticos                                                                                                                            |
+| corrplot   | Visualiza la matriz de correlación entre variables numéricas                                                                                             |
+| caret      | Para la creación y evaluación de modelos de aprendizaje automático en R.                                                                                 |
+| pROC       | Proporciona herramientas para la evaluación y visualización de modelos de clasificación mediante la curva ROC y el cálculo del área bajo la curva (AUC). |
+| kableExtra | Mejora y embellece las tablas generadas con kable() del paquete knitr.                                                                                   |
+| survival   | Realizar análisis de supervivencia, como el cálculo de curvas de Kaplan-Meier, la estimación de modelos de riesgos proporcionales de Cox, entre otros.   |
+| survminer  | Mejora la visualización de los resultados obtenidos con el paquete `survival`.                                                                           |
+| lubridate  | Facilita la manipulación y el análisis de fechas y horas.                                                                                                |
+| purrr      | Itera de forma elegante y funcional sobre listas o vectores en R, evitando bucles `for.`                                                                 |
+:::
+
+A continuación podrá ver todas y cada unas de las funciones utilizadas para el estudio que se ha llevado a cabo.
+
+## Analizar tipo de variable {#Analizarvariables}
+
+```{r}
+analizar_variables <- function(data, variables_interes) {
+  
+  # Crear listas vacías para almacenar variables según condición
+  vars_numericas <- list()
+  vars_categoricas <- list()
+  
+  # Iterar sobre cada variable en la lista de interés
+  for (variable in variables_interes) {
+    
+    # Verificar si la variable existe en el dataset
+    if (!(variable %in% colnames(data))) {
+      message(paste("⚠️ Advertencia: La variable", variable, "no está en el dataset."))
+      next  # Pasar a la siguiente variable
+    }
+    
+    # Si la variable es numérica, agregarla a la lista de numéricas
+    if (is.numeric(data[[variable]])) {
+      vars_numericas[[variable]] <- data[[variable]]
+    }
+    
+    # Si la variable es categórica (factor o character), agregarla a la lista de categóricas
+    if (is.character(data[[variable]]) || is.factor(data[[variable]])) {
+      vars_categoricas[[variable]] <- as.factor(data[[variable]])  # Convertir a factor si es character
+    }
+  }
+  
+  # Devolver ambas listas en un solo objeto
+  return(list(Numericas = vars_numericas, Categoricas = vars_categoricas))
+}
+```
+
+## Análisis estadístico general de variables numéricas {#Generalnumerico}
+
+```{r}
+# Función para analizar múltiples variables en un dataset
+analizar_variables_df <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # Iterar sobre cada variable
+  for (variable in variables_existentes) {
+    
+      # Extraer estadísticas
+      resumen <- summary(data[[variable]], na.rm = TRUE)
+      
+      # Crear DataFrame con estadísticas
+      df_resumen <- data.frame(
+        Variable = variable,
+        Min = as.numeric(resumen[1]),  
+        Q1 = as.numeric(resumen[2]),
+        Mediana = as.numeric(resumen[3]),
+        Media = mean(data[[variable]], na.rm = TRUE),
+        Q3 = as.numeric(resumen[5]),
+        Max = as.numeric(resumen[6]),
+        Varianza = var(data[[variable]], na.rm = TRUE),
+        Desviacion = sd(data[[variable]], na.rm = TRUE)
+      )
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  return(resultados_final)  # Devolver DataFrame final
+}
+```
+
+## Análisis estadístico general de variables categóricas {#Generalcategorico}
+
+```{r}
+# Función para analizar variables categóricas en un dataset y devolver un datatable interactivo
+analizar_variables_categoricas <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # Iterar sobre cada variable categórica
+  for (variable in variables_existentes) {
+    
+    if (is.factor(data[[variable]]) | is.character(data[[variable]])) {
+      # 📊 Si es variable categórica (factor o carácter)
+      
+      # Frecuencia absoluta de las categorías
+      freq_abs <- table(data[[variable]], useNA = "ifany")
+      
+      # Frecuencia relativa
+      freq_rel <- prop.table(freq_abs) * 100
+      
+      # Moda (categoría más frecuente)
+      moda <- names(freq_abs)[which.max(freq_abs)]
+      
+      # Número de categorías distintas
+      n_categorias <- length(freq_abs)
+      
+      # Crear DataFrame con estadísticas categóricas
+      df_resumen <- data.frame(
+        Variable = variable,
+        `Número de Categorías` = n_categorias,
+        `Moda` = moda,
+        `Frecuencia Absoluta` = paste(names(freq_abs), ":", freq_abs, collapse = ", "),
+        `Frecuencia Relativa (%)` = paste(names(freq_rel), ":", round(freq_rel, 2), collapse = ", ")
+      )
+    } else {
+      next  # Si la variable no es categórica, se omite
+    }
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  # Devolver el resultado como un datatable interactivo
+  library(DT)
+  return(datatable(resultados_final, options = list(pageLength = 3)))
+}
+
+```
+
+## Resultados visuales de cualquier variable {#Resultadosvisuales}
+
+```{r}
+visualizar_variable <- function(data, variable) {
+  if (is.numeric(data[[variable]])) {
+    # Si es numérica: Histograma y Boxplot
+    # Ajustar el binwidth del histograma según el rango de la variable
+    rango <- range(data[[variable]], na.rm = TRUE)
+    binwidth <- (rango[2] - rango[1]) / 30  # Establece el binwidth de manera automática
+    
+    p1 <- ggplot(data, aes(x = !!sym(variable))) +
+      geom_histogram(binwidth = binwidth, fill = "tomato", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Histograma de", variable), x = variable, y = "Frecuencia") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotar etiquetas para mejor visualización
+    
+    p2 <- ggplot(data, aes(y = !!sym(variable))) +
+      geom_boxplot(fill = "gold", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Boxplot de", variable), y = variable) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    grid.arrange(p1, p2, ncol = 2)
+    
+  } else {
+    # 📊 Si es categórica: Gráfico de barras y Pie Chart
+    p1 <- ggplot(data, aes(x = !!sym(variable))) +
+      geom_bar(fill = "steelblue", color = "black") +
+      theme_minimal() +
+      labs(title = paste("Distribución de", variable), x = variable, y = "Frecuencia") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    p2 <- ggplot(data, aes(x = "", fill = !!sym(variable))) +
+      geom_bar(width = 1) +
+      coord_polar("y") +
+      theme_void() +
+      labs(title = paste("Distribución de", variable))
+    
+    grid.arrange(p1, p2, ncol = 2)
+  }
+}
+
+```
+
+## Detectar valores perdidos, imputarlos y detectar valores atípicos {#Imputacion}
+
+```{r}
+procesar_datos <- function(data, variables_interes) {
+  # Eliminar filas con "Desconocido" en cualquier variable
+  data <- data %>% filter(if_all(everything(), ~ . != "Desconocido"))
+  
+  # Filtrar valores específicos no válidos
+  if ("EDAD_DIAGNOSTICO" %in% colnames(data)) {
+    data <- data %>% filter(EDAD_DIAGNOSTICO != 999)
+  }
+  if ("Nx" %in% colnames(data)) {
+    data <- data %>% filter(Nx != 999)
+  }
+  if ("TAMAÑO" %in% colnames(data)) {
+    data <- data %>% filter(TAMAÑO != 999)
+  }
+  
+  # Imputación de valores perdidos
+  for (var in variables_interes) {
+    if (var %in% colnames(data)) {
+      if (is.numeric(data[[var]])) {
+        data[[var]][is.na(data[[var]])] <- mean(data[[var]], na.rm = TRUE)
+      } else if (is.factor(data[[var]]) || is.character(data[[var]])) {
+        moda <- names(which.max(table(data[[var]])))
+        data[[var]][is.na(data[[var]])] <- moda
+      }
+    }
+  }
+  
+  # Detección y eliminación de valores atípicos
+  for (var in variables_interes) {
+    if (var %in% colnames(data) && is.numeric(data[[var]])) {
+      Q1 <- quantile(data[[var]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data[[var]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      limite_inferior <- Q1 - 1.5 * IQR
+      limite_superior <- Q3 + 1.5 * IQR
+      data <- data %>% filter(data[[var]] >= limite_inferior & data[[var]] <= limite_superior)
+    }
+  }
+  
+  # Seleccionar solo las variables de interés
+  data <- data %>% select(all_of(variables_interes))
+  
+  return(data)
+}
+
+```
+
+## Categorizar y recodificar las variables para estratificar adecuadamente {#Categorizacion}
+
+```{r}
+# Función para preprocesar el dataset
+preprocesar_datos <- function(data) {
+  
+  # Verificar si las columnas existen antes de modificarlas
+  if ("GRADO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(GRADO_CAT = case_when(
+        GRADO %in% c(1, 2) ~ "1/2",
+        GRADO == 3 ~ "3",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(GRADO_CAT = as.factor(GRADO_CAT))
+  }
+  
+  if ("HISTOLOGIA" %in% colnames(data)) {
+    data <- data %>%
+      mutate(HISTOLOGIA_CAT = case_when(
+        HISTOLOGIA == "DUCTAL" ~ "DUCTAL",
+        TRUE ~ "NO DUCTAL"
+      )) %>%
+      mutate(HISTOLOGIA_CAT = as.factor(HISTOLOGIA_CAT))
+  }
+  
+  if ("Ki67" %in% colnames(data)) {
+    data <- data %>%
+      mutate(Ki67_CAT = case_when(
+        Ki67 <= 14 ~ "<=14",
+        Ki67 > 14 ~ ">14",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(Ki67_CAT = as.factor(Ki67_CAT))
+  }
+  
+  if ("FENOTIPO_IHQ" %in% colnames(data)) {
+    data <- data %>%
+      mutate(FENOTIPO_IHQ_CAT = case_when(
+        FENOTIPO_IHQ %in% c("LUMINAL A", "LUMINAL B") ~ "LUMINAL",
+        FENOTIPO_IHQ %in% c("LUMINAL-HER2", "HER2") ~ "HER2",
+        TRUE ~ "TRIPLE NEGATIVO"
+      )) %>%
+      mutate(FENOTIPO_IHQ_CAT = as.factor(FENOTIPO_IHQ_CAT))
+  }
+  
+  if ("ESTADIO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(ESTADIO_CAT = case_when(
+        ESTADIO %in% c("I", "IA", "IB") ~ "I",
+        ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+        ESTADIO %in% c("III", "IIIA", "IIIB", "IIIC") ~ "III",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(ESTADIO_CAT = as.factor(ESTADIO_CAT))
+  }
+  
+  if ("TIPO_QT_NEOADY_OK" %in% colnames(data)) {
+    data <- data %>%
+      mutate(QT_CAT = case_when(
+        TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE") ~ "antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA", "QUIMIOTERAPIA-INMUNOTERAPIA") ~ "INMUNO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(QT_CAT = as.factor(QT_CAT))
+  }
+  
+  if ("No_ANTIBIOTICOS" %in% colnames(data)) {
+    data <- data %>%
+      mutate(No_ANTIBIOTICOS_CAT = case_when(
+        No_ANTIBIOTICOS == 1 ~ "Una vez",
+        No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(No_ANTIBIOTICOS_CAT = as.factor(No_ANTIBIOTICOS_CAT))
+  }
+  
+  if ("RCB" %in% colnames(data)) {
+    data <- data %>%
+      mutate(RCP = case_when(
+        RCB %in% c("RCB-0", "RCB-I") ~ "SI",
+        RCB %in% c("RCB-II", "RCB-III") ~ "NO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(RCP = as.factor(RCP))
+  }
+  
+  return(data)
+}
+```
+
+## Analizar asociación/correlación entre variable evento y otra {#Asociacion}
+
+```{r}
+detectar_asociacion <- function(data, evento, variable) {
+  
+  # Analizar la relación con la variable evento (RCP)
+  cat("\n Analizando relación entre", evento, "y", variable, "\n")
+  
+  # Convertir la variable 'evento' a factor si no lo es
+  data <- data %>% mutate(across(all_of(evento), as.factor))
+  
+  # Para variables numéricas
+  if (is.numeric(data[[variable]])) {
+    cat("\n (Variable numérica)\n")
+    
+    # Prueba de normalidad con Shapiro-Wilk
+    if (nrow(data) >= 50) {
+      normalidad <- shapiro.test(data[[variable]])
+      es_normal <- normalidad$p.value > 0.05
+      cat("\n Prueba de normalidad (Shapiro-Wilk): p-value =", normalidad$p.value, "\n")
+    } else {
+      es_normal <- FALSE
+    }
+
+    # Si hay exactamente dos grupos en la variable evento, considerar prueba t
+    if (length(levels(data[[evento]])) == 2 && es_normal) {
+      t_test <- t.test(data[[variable]] ~ data[[evento]])
+      cat("\n Resultado de la prueba t de Student (dos grupos, distribución normal):\n")
+      print(t_test)
+    } else {
+      # Si no, usar correlación (Spearman o Pearson según normalidad)
+      metodo_cor <- ifelse(es_normal, "pearson", "spearman")
+      cor_test_result <- cor.test(data[[variable]], as.numeric(as.factor(data[[evento]])), method = metodo_cor)
+      cat("\n Resultado de la prueba de correlación (", metodo_cor, "):\n")
+      print(cor_test_result)
+    }
+    
+    # Visualización con boxplot
+    p <- ggplot(data, aes(x = .data[[evento]], y = .data[[variable]], fill = .data[[evento]])) +
+      geom_boxplot() +
+      theme_minimal() +
+      labs(title = paste("Distribución de", variable, "por", evento), x = evento, y = variable)
+    print(p)
+    
+  } 
+  
+  # Para variables categóricas
+  else if (is.factor(data[[variable]]) || is.character(data[[variable]])) {
+    cat("\n (Variable categórica)\n")
+    
+    # Asegurarse de que ambas variables sean factores
+    data <- data %>%
+      mutate(across(c(all_of(evento), all_of(variable)), as.factor))
+    
+    # Crear tabla de contingencia
+    tabla <- table(data[[evento]], data[[variable]])
+    
+    # Realizar la prueba de Chi-cuadrado o Fisher
+    if (any(tabla < 5)) {
+      test_result <- fisher.test(tabla, simulate.p.value = TRUE)
+      cat("\n Se utilizó la prueba exacta de Fisher debido a frecuencias esperadas menores a 5.\n")
+    } else {
+      test_result <- chisq.test(tabla)
+      cat("\n Se utilizó la prueba de Chi-cuadrado.\n")
+    }
+    
+    # Imprimir el resultado de la prueba
+    print(test_result)
+    
+    # Visualización con mapa de calor
+    p <- ggplot(as.data.frame(tabla), aes(x = Var2, y = Var1, fill = Freq)) +
+      geom_tile() +
+      scale_fill_gradient(low = "white", high = "blue") +
+      theme_minimal() +
+      labs(title = paste("Mapa de calor entre", evento, "y", variable), x = variable, y = evento)
+    
+    print(p)
+  }
+  
+  # Si la variable no es numérica ni categórica
+  else {
+    cat("\n No se pudo determinar el tipo de variable para el análisis.")
+  }
+}
+```
+
+## Realizar la regresión logística {#Regresion}
+
+```{r}
+regresion_logistica_visual_combinada <- function(data, evento, variables_significativas, top_n = 5, ordenar_por = "auc") {
+  
+  library(tidyverse)
+  library(pROC)
+  library(caret)
+  library(knitr)
+  library(kableExtra)
+  
+  # Limpieza
+  data <- data %>%
+    drop_na(all_of(c(evento, variables_significativas))) %>%
+    mutate(across(all_of(evento), ~factor(.x, levels = c("NO", "SI"))))
+  
+  # Combinaciones
+  combinaciones <- unlist(lapply(1:length(variables_significativas), function(x) {
+    combn(variables_significativas, x, simplify = FALSE)
+  }), recursive = FALSE)
+  
+  resultados <- list()
+  resumen_modelos <- data.frame()
+  
+  for (combinacion in combinaciones) {
+    
+    nombre_modelo <- paste(combinacion, collapse = "_")
+    formula_logistica <- as.formula(paste(evento, "~", paste(combinacion, collapse = " + ")))
+    modelo <- glm(formula_logistica, data = data, family = binomial)
+    
+    prob <- predict(modelo, type = "response")
+    pred <- factor(ifelse(prob > 0.5, "SI", "NO"), levels = c("NO", "SI"))
+    
+    matriz <- confusionMatrix(pred, data[[evento]], positive = "SI")
+    
+    auc_valor <- auc(roc(data[[evento]], prob))
+    exactitud <- matriz$overall["Accuracy"]
+    sensibilidad <- matriz$byClass["Sensitivity"]
+    especificidad <- matriz$byClass["Specificity"]
+    f1 <- matriz$byClass["F1"]
+    
+    # Guardar resumen en un data.frame
+    resumen_modelos <- rbind(
+      resumen_modelos,
+      data.frame(
+        modelo = nombre_modelo,
+        variables = paste(combinacion, collapse = ", "),
+        auc = round(auc_valor, 3),
+        exactitud = round(exactitud, 3),
+        sensibilidad = round(sensibilidad, 3),
+        especificidad = round(especificidad, 3),
+        f1 = round(f1, 3),
+        stringsAsFactors = FALSE
+      )
+    )
+    
+    # Guardar resultados completos
+    resultados[[nombre_modelo]] <- list(
+      resumen_modelo = summary(modelo),
+      
+      tabla_metricas = kable(
+        data.frame(
+          Métrica = c("AUC", "Exactitud", "Sensibilidad", "Especificidad", "F1 Score"),
+          Valor = round(c(auc_valor, exactitud, sensibilidad, especificidad, f1), 3)
+        ),
+        caption = paste("Métricas del modelo:", nombre_modelo),
+        format = "html"
+      ) %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+      
+      matriz_confusion = kable(as.data.frame(matriz$table),
+                               caption = paste("Matriz de Confusión:", nombre_modelo),
+                               format = "html") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+      
+      auc = auc_valor,
+      
+      grafico_roc = ggroc(roc(data[[evento]], prob)) +
+        labs(title = paste("Curva ROC -", nombre_modelo),
+             x = "1 - Especificidad", y = "Sensibilidad") +
+        theme_minimal()
+    )
+  }
+  
+  # Ordenar por métrica elegida y seleccionar los mejores
+  top_modelos <- resumen_modelos %>%
+    arrange(desc(.data[[ordenar_por]])) %>%
+    head(top_n)
+  
+  # Salida
+  list(
+    todos_los_resultados = resultados,
+    resumen_modelos = kable(top_modelos, caption = paste("Top", top_n, "modelos según", ordenar_por), format = "html") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed")),
+    top_modelos_info = top_modelos
+  )
+}
+```
+
+## Preparar los datos para supervivencia {#Preparar}
+
+```{r}
+preparar_datos_supervivencia <- function(data) {
+  data %>%
+    mutate(
+      FECHA_INICIO_QT = as.Date(FECHA_INICIO_QT),
+      FECHA_ULTIMO_CONTROL = as.Date(FECHA_ULTIMO_CONTROL),
+      tiempo_sg = as.numeric(difftime(FECHA_ULTIMO_CONTROL, FECHA_INICIO_QT, units = "days")) / 30.44, # en meses
+      estado_SG = ifelse(data[["ESTADO_ULTIMO_\nCONTROL"]] == "MCE", 1, 0),
+      ab = factor(ANTIBIOTICO),
+      subtipo = factor(FENOTIPO_IHQ_CAT)
+    ) %>%
+    filter(!is.na(tiempo_sg) & tiempo_sg >= 0)
+}
+```
+
+## Realizar el análisis de supervivencia {#Supervivencia}
+
+```{r}
+analisis_supervivencia <- function(data) {
+  necesarias <- c("tiempo_sg", "estado_SG", "ab", "subtipo")
+  faltantes <- necesarias[!necesarias %in% names(data)]
+  if (length(faltantes) > 0) stop(paste("Faltan variables necesarias:", paste(faltantes, collapse = ", ")))
+
+  data <- data %>% drop_na(tiempo_sg, estado_SG, ab, subtipo)
+
+  # Supervivencia global
+  km_total <- survfit(Surv(tiempo_sg, estado_SG) ~ 1, data = data)
+  g1 <- ggsurvplot(km_total, data = data, title = "Supervivencia Global", xlab = "Meses", ylab = "Prob. de supervivencia")
+
+  # Subtipos moleculares
+  km_subtipo <- survfit(Surv(tiempo_sg, estado_SG) ~ subtipo, data = data)
+  g2 <- ggsurvplot(km_subtipo, data = data, pval = TRUE, legend.title = "Subtipo", title = "SG por subtipo tumoral")
+
+  # Uso de antibióticos
+  km_ab <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = data)
+  g3 <- ggsurvplot(km_ab, data = data, pval = TRUE, legend.title = "Antibióticos", title = "SG por uso de antibióticos")
+
+  # Por subtipo y antibióticos
+  g4_list <- list()
+  for (tipo in levels(data$subtipo)) {
+    subdata <- data %>% filter(subtipo == tipo)
+    if (nrow(subdata) >= 10 && length(unique(subdata$ab)) > 1) {
+      fit_sub <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = subdata)
+      g4_list[[tipo]] <- ggsurvplot(fit_sub, data = subdata, pval = TRUE,
+                                    title = paste("SG por AB en subtipo:", tipo),
+                                    legend.title = "Antibióticos")
+    }
+  }
+
+  return(list(
+    global = g1,
+    por_subtipo = g2,
+    por_ab = g3,
+    por_subtipo_y_ab = g4_list
+  ))
+}
+
+
+```
+
+# Entorno
+
+```{r sessionInfo, results='hold', echo=FALSE}
+# restore output hook
+knit_hooks$set(output = function(x, options){paste(c("```", x, "```"), collapse = "\n")})
+cat("Variables in memory:\n")
+ls()
+cat("\n")
+sessionInfo()
+```
+
+::: {style="position: fixed; bottom: 20px; right: 20px; z-index: 1000;           padding: 12px 24px; background-color: #0056b3; color: #ffffff;           text-decoration: none; border-radius: 8px;           box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.3);           font-size: 16px; font-weight: 600;           transition: background-color 0.3s, color 0.3s;"}
+<a href="#top" class="floating-button">Volver al inicio</a>
+:::
