@@ -1364,9 +1364,17 @@ En el análisis por subtipos moleculares, las pacientes con tumores **Luminal** 
 
 En cuanto al uso de antibióticos, se observa que las pacientes que **no recibieron antibióticos** mantienen una probabilidad de supervivencia relativamente estable, que no desciende por debajo de 0.6 durante el período de seguimiento. En cambio, aquellas que **sí recibieron antibióticos** presentan una disminución gradual en la probabilidad de supervivencia, que se acentúa cerca de los 300 meses, momento en el cual la probabilidad cae bruscamente hasta alcanzar un valor próximo a 0.
 
+![Supervivencia por uso de antibióticos al tener LUMINAL](images/clipboard-2526190604.png)
+
+Al analizar específicamente el subtipo **LUMINAL**, se observa que las pacientes que **no recibieron antibióticos** presentan una probabilidad de supervivencia muy similar a la de aquellas que **sí los recibieron**, manteniéndose ambas ligeramente por debajo de 1 a lo largo de los 300 meses de seguimiento.
+
 ![Supervivencia por uso de antibióticos al tener HER2+](Images/subAntHer2.png){fig-align="center"}
 
 Al analizar específicamente el subtipo **HER2+**, se observa que las pacientes que **no fueron tratadas con antibióticos** mantienen una probabilidad de supervivencia constante de 1 durante todo el seguimiento. Por otro lado, aquellas que **sí recibieron antibióticos** muestran una probabilidad algo menor, situándose por encima de 0.75 antes de los 200 meses y manteniéndose estable en torno a 0.75 a partir de ese punto.
+
+![Supervivencia por uso de antibióticos al tener TRIPLE NEGATIVO](images/clipboard-3212820707.png)
+
+Al analizar específicamente el subtipo **TRIPLE** **NEGATIVO**, se observa que las pacientes que **no recibieron antibióticos** presentan una menor probabilidad de supervivencia en comparación con aquellas que **sí los recibieron**. En este último grupo, la probabilidad de supervivencia se mantiene en 1 hasta aproximadamente los 250 meses de seguimiento. Esto podría sugerir un posible efecto beneficioso del uso de antibióticos en pacientes con este subtipo tumoral, contribuyendo a una mayor supervivencia.
 
 Las funciones utilizadas en este apartado son:\
 - [Preparar los datos para supervivencia](#Preparar)
@@ -1375,9 +1383,9 @@ Las funciones utilizadas en este apartado son:\
 
 # Conclusiones finales
 
-Los resultados obtenidos en este análisis de supervivencia sugieren que el uso de antibióticos durante el tratamiento con quimioterapia neoadyuvante podría estar asociado a una menor probabilidad de supervivencia en pacientes con cáncer de mama, especialmente en determinados subgrupos biológicos como HER2+ y triple negativo. Estos hallazgos refuerzan la hipótesis de que la alteración de la microbiota —potencialmente inducida por la administración de antibióticos— podría tener un impacto relevante en la eficacia de las terapias oncológicas y, en última instancia, en la evolución clínica de las pacientes.
+Los resultados obtenidos en este análisis de supervivencia sugieren que el uso de antibióticos durante el tratamiento con quimioterapia neoadyuvante podría estar asociado a una menor probabilidad de supervivencia en pacientes con cáncer de mama, particularmente en ciertos subtipos biológicos como **HER2+** y **LUMINAL**. Estos hallazgos respaldan la hipótesis de que la alteración de la microbiota —posiblemente inducida por la administración de antibióticos— puede influir negativamente en la eficacia de las terapias oncológicas y, en consecuencia, en la evolución clínica de las pacientes.
 
-Además, las diferencias observadas entre subtipos moleculares subrayan la necesidad de considerar el perfil biológico del tumor a la hora de valorar el riesgo asociado al uso de antibióticos durante el tratamiento oncológico. Esto sugiere que las decisiones clínicas relacionadas con la prescripción de antimicrobianos deberían realizarse con cautela, y en lo posible bajo un criterio de indicación estrictamente necesario, especialmente en el contexto de la quimioterapia.
+En contraste, en el caso del subtipo **TRIPLE NEGATIVO**, se observa una tendencia opuesta: las pacientes que recibieron antibióticos presentan una mayor probabilidad de supervivencia en comparación con aquellas que no los recibieron. Este hallazgo sugiere que, en este subgrupo, el uso de antibióticos podría tener un efecto beneficioso, aunque se requiere un análisis más profundo para confirmar esta asociación y comprender los mecanismos subyacentes.Además, las diferencias observadas entre subtipos moleculares subrayan la necesidad de considerar el perfil biológico del tumor a la hora de valorar el riesgo asociado al uso de antibióticos durante el tratamiento oncológico. Esto sugiere que las decisiones clínicas relacionadas con la prescripción de antimicrobianos deberían realizarse con cautela, y en lo posible bajo un criterio de indicación estrictamente necesario, especialmente en el contexto de la quimioterapia.
 
 Por otro lado, estos resultados también ponen de relieve la importancia de integrar el control de infecciones, la evaluación del estado inmunológico y la vigilancia de la microbiota intestinal como factores relevantes en el manejo integral de las pacientes con cáncer. En un futuro, este enfoque podría abrir la puerta a estrategias de soporte que busquen minimizar el impacto de los antibióticos o restaurar la microbiota, como el uso de probióticos o transplantes fecales, siempre dentro de un marco de evidencia científica robusta.
 
