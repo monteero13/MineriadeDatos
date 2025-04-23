@@ -1029,9 +1029,9 @@ resultados_sg$por_ab
 
 # Mostrar resultados por subtipo
 
-resultados_sg$por_subtipo_y_ab[["Luminal"]]
+resultados_sg$por_subtipo_y_ab[["LUMINAL"]]
 resultados_sg$por_subtipo_y_ab[["HER2"]]
-resultados_sg$por_subtipo_y_ab[["Triple Negativo"]]
+resultados_sg$por_subtipo_y_ab[["TRIPLE NEGATIVO"]]
 ```
 
 # Resumen y resultados destacables por apartado
