@@ -1,0 +1,181 @@
+/* Título del libro: más grande que cualquier h1 */
+.title {
+  font-size: 2.8rem;   /* más grande que h1 (~2rem por defecto) */
+  font-weight: bold;
+  color: #002859;
+  margin-bottom: 1rem;
+}
+
+/* Encabezado h1 */
+h1 {
+  font-size: 2rem;     /* tamaño estándar o menor */
+  color: #00AEDA;
+}
+
+.dataframe {
+  display: inline-block;
+}
+.dataframe td {
+  vertical-align: middle;
+  text-align: right;
+}
+tbody tr:hover {
+  background: rgba(0, 174, 218, 0.2); /* Versión del azul claro con transparencia */
+}
+
+.nav-tabs .nav-item .nav-link {
+  color: #4a4a4a;
+}
+
+.nav-tabs .nav-item .nav-link.active {
+  background-color: #00AEDA; /* Azul claro */
+  color: #ffffff;
+}
+
+.nav-tabs .nav-link:hover {
+  border-color: #00AEDA;
+  background-color: #00AEDA;
+  color: #ffffff;
+}
+
+/* Elimina el título del libro debajo del logo */
+.sidebar-title {
+  display: none;
+}
+
+/* Oculta la búsqueda */
+.sidebar-search {
+  display: none !important;
+}
+
+
+/* Estilo al texto "Índice" debajo del logo */
+.indice-texto {
+  text-align: center;
+  margin-top: 10px;
+  font-size: 1.1em;
+  font-weight: bold;
+  color: #00AEDA; /* Azul claro */
+}
+
+/* Mejora visual del sidebar */
+.sidebar-title {
+  text-align: center;
+  padding: 10px;
+}
+
+/* Ajustes del menú lateral */
+nav.sidebar nav[role="doc-toc"] {
+  margin-top: 10px;
+}
+
+/* Fuente personalizada */
+@font-face {
+  font-family: "FiraCode";
+  src: url("font/FiraCode-Regular.ttf");
+}
+
+/* Color para código en línea */
+code {
+  color: #002859 !important;
+}
+
+/* Color para bloques de código */
+pre code {
+  color: #00AEDA; !important;
+}
+
+/* Fondo claro opcional para bloques (si quieres destacar) */
+pre {
+  background-color: #00AEDA; !important;  /* opcional */
+  border-left: 4px solid #002859;        /* opcional */
+  border-right: 4px solid #002859;
+  padding: 1em;
+  border-radius: 6px;
+}
+
+/* Estilo base para todos los callouts */
+.callout {
+  border-left: 5px solid #002859 !important;  /* Borde azul oscuro */
+  background-color: #E6F8FC !important;       /* Fondo claro personalizado */
+}
+
+/* Título del callout */
+.callout .callout-title {
+  background-color: #00AEDA !important;       /* Relleno del título */
+  color: white !important;                    /* Texto blanco */
+}
+
+/* Ícono del callout */
+.callout .callout-icon::before {
+  color: #002859 !important;                  /* Ícono azul oscuro */
+}
+
+.autor-card {
+  text-align: center;
+  padding: 1.5em;
+  margin-top: 2em;
+  border-top: 1px solid #ccc;
+  background-color: #f9f9f9;
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.autor-info p {
+  margin: 0.3em 0;
+  font-size: 1rem;
+}
+
+.social-icons {
+  margin-top: 1em;
+}
+
+.social-icons a {
+  display: inline-block;
+  margin: 0 0.5em;
+  transition: transform 0.2s;
+}
+
+.social-icons a:hover {
+  transform: scale(1.15);
+}
+
+.social-icons img {
+  width: 28px;
+  height: 28px;
+  filter: grayscale(100%);
+  transition: filter 0.3s, opacity 0.3s;
+  opacity: 0.7;
+}
+
+.social-icons a:hover img {
+  filter: grayscale(0%);
+  opacity: 1;
+}
+
+#boton-arriba {
+  display: none; /* Inicialmente oculto */
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  background-color: #00AEDA;
+  border: 2px solid #002859;
+  color: white;
+  padding: 10px 15px;
+  font-size: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 1000;
+  box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+  transition: background-color 0.3s ease;
+}
+
+#boton-arriba:hover {
+  background-color: #0095c2;
+}
+
+
+/* Oculta el ícono de enlace externo que pone Quarto */
+a[target="_blank"]::after {
+  content: none !important;
+}
