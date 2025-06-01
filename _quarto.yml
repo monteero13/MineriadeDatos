@@ -1,0 +1,40 @@
+project:
+  type: book
+
+
+metadata-files: [translations.yml]
+
+book:
+  title: "Impacto del Uso de Antibióticos en la Respuesta al Tratamiento Neoadyuvante en Cáncer de Mama"
+  date: '2025-05-20'
+  favicon: umalogo.png
+  author:
+    name: "Alberto Montero"
+  sidebar:
+    logo: COLOR_TRANSPARENTE_INFORMATICA.png
+  chapters:
+    - index.qmd
+    - Act1.qmd
+    - Act2.qmd
+    - Act3.qmd
+    - LibFunc.qmd
+  page-footer:
+    left: |
+      © 2025 Alberto Montero
+format:
+  html:
+    theme: cosmo
+    css: custom.css
+    search: false
+    toc-title: "Contenidos"
+    number-sections: false
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: false
+    fig-cap-location: top
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true
+
+    

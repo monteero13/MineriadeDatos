@@ -1,0 +1,2295 @@
+# Análisis de los datos clínicos - Actividad 1
+
+A través del análisis de un conjunto de datos clínicos, se busca identificar posibles asociaciones entre el uso de antibióticos y los resultados del tratamiento, medidos mediante la escala RCB (Residual Cancer Burden), la supervivencia y el riesgo de recaída.
+
+Este estudio es relevante porque, aunque se ha explorado en otros tipos de cáncer, el impacto de los antibióticos en la respuesta neoadyuvante del cáncer de mama aún no está bien establecido. El análisis permitirá comprender mejor si el uso de antibióticos afecta la probabilidad de alcanzar una respuesta patológica completa, lo que podría tener implicaciones en la personalización del tratamiento oncológico.
+
+```{r setup, include=FALSE}
+# Definir el mirror de CRAN para evitar errores en install.packages()
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+paquetes <- c("knitr", "readxl", "skimr", "dplyr", "DT", "ggplot2",  
+              "gridExtra", "tidyr", "reshape2", "stats", "corrplot", 
+              "caret", "pROC", "kableExtra", "survival", "survminer", 
+              "lubridate", "purrr", "plotly", "MASS", "ResourceSelection")
+
+for (paquete in paquetes) {
+  if (!requireNamespace(paquete, quietly = TRUE)) {
+    install.packages(paquete)
+  }
+}
+
+lapply(paquetes, library, character.only = TRUE)
+
+opts_chunk$set(echo = TRUE, collapse = TRUE)
+
+# Identificación del ordenador donde se ejecuta
+my_computer <- Sys.info()[c(4, 1, 5, 7)]
+```
+
+```{r, include=FALSE}
+analizar_variables <- function(data, variables_interes) {
+  
+  # Crear listas vacías para almacenar variables según condición
+  vars_numericas <- list()
+  vars_categoricas <- list()
+  
+  # Iterar sobre cada variable en la lista de interés
+  for (variable in variables_interes) {
+    
+    # Verificar si la variable existe en el dataset
+    if (!(variable %in% colnames(data))) {
+      message(paste("⚠️ Advertencia: La variable", variable, "no está en el dataset."))
+      next  # Pasar a la siguiente variable
+    }
+    
+    # Si la variable es numérica, agregarla a la lista de numéricas
+    if (is.numeric(data[[variable]])) {
+      vars_numericas[[variable]] <- data[[variable]]
+    }
+    
+    # Si la variable es categórica (factor o character), agregarla a la lista de categóricas
+    if (is.character(data[[variable]]) || is.factor(data[[variable]])) {
+      vars_categoricas[[variable]] <- as.factor(data[[variable]])  # Convertir a factor si es character
+    }
+  }
+  
+  # Devolver ambas listas en un solo objeto
+  return(list(Numericas = vars_numericas, Categoricas = vars_categoricas))
+}
+
+
+# 📌 Función para analizar múltiples variables en un dataset
+analizar_variables_df <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("❌ Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # 📌 Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # 📌 Iterar sobre cada variable
+  for (variable in variables_existentes) {
+    
+      # Extraer estadísticas
+      resumen <- summary(data[[variable]], na.rm = TRUE)
+      
+      # Crear DataFrame con estadísticas
+      df_resumen <- data.frame(
+        Variable = variable,
+        Min = as.numeric(resumen[1]),  
+        Q1 = as.numeric(resumen[2]),
+        Mediana = as.numeric(resumen[3]),
+        Media = mean(data[[variable]], na.rm = TRUE),
+        Q3 = as.numeric(resumen[5]),
+        Max = as.numeric(resumen[6]),
+        Varianza = var(data[[variable]], na.rm = TRUE),
+        Desviacion = sd(data[[variable]], na.rm = TRUE)
+      )
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # 📌 Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  return(resultados_final)  # Devolver DataFrame final
+}
+
+visualizar_variable <- function(data, variable) {
+  var_data <- data[[variable]]
+  
+  if (is.numeric(var_data)) {
+    
+    # Histograma
+    fig1 <- plot_ly(
+      x = var_data, type = 'histogram',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 2)
+      ),
+      autobinx = FALSE,
+      xbins = list(
+        start = floor(min(var_data, na.rm = TRUE)),
+        end = ceiling(max(var_data, na.rm = TRUE)),
+        size = 1
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Valor"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    # Boxplot
+    fig2 <- plot_ly(
+      y = var_data, type = 'box',
+      fillcolor = '#00AEDA',
+      line = list(color = '#002859')
+    ) %>%
+      layout(
+        yaxis = list(title = "Valor")
+      )
+    
+    # Mostrar uno debajo del otro
+    subplot(fig1, fig2, nrows = 2, margin = 0.1, titleX = TRUE, titleY = TRUE)
+    
+  } else {
+    # Si es categórica
+    freq_table <- table(var_data)
+    x <- names(freq_table)
+    y <- as.numeric(freq_table)
+    text <- as.character(y)
+    
+    data_plot <- data.frame(x, y, text)
+    
+    fig <- plot_ly(
+      data_plot,
+      x = ~x, y = ~y, type = 'bar',
+      text = ~text, textposition = 'auto',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 1.5)
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Categoría"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    fig
+  }
+}
+
+
+# 📌 Función para analizar variables categóricas en un dataset y devolver un datatable interactivo
+analizar_variables_categoricas <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("❌ Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # 📌 Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # 📌 Iterar sobre cada variable categórica
+  for (variable in variables_existentes) {
+    
+    if (is.factor(data[[variable]]) | is.character(data[[variable]])) {
+      # 📊 Si es variable categórica (factor o carácter)
+      
+      # Frecuencia absoluta de las categorías
+      freq_abs <- table(data[[variable]], useNA = "ifany")
+      
+      # Frecuencia relativa
+      freq_rel <- prop.table(freq_abs) * 100
+      
+      # Moda (categoría más frecuente)
+      moda <- names(freq_abs)[which.max(freq_abs)]
+      
+      # Número de categorías distintas
+      n_categorias <- length(freq_abs)
+      
+      # Crear DataFrame con estadísticas categóricas
+      df_resumen <- data.frame(
+        Variable = variable,
+        `Número de Categorías` = n_categorias,
+        `Moda` = moda,
+        `Frecuencia Absoluta` = paste(names(freq_abs), ":", freq_abs, collapse = ", "),
+        `Frecuencia Relativa (%)` = paste(names(freq_rel), ":", round(freq_rel, 2), collapse = ", ")
+      )
+    } else {
+      next  # Si la variable no es categórica, se omite
+    }
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # 📌 Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+
+}
+
+procesar_datos <- function(data, variables_interes) {
+  # Eliminar valores NA
+  data <- na.omit(data)
+
+  # Eliminar filas con "Desconocido" en cualquier variable
+  data <- data %>% filter(if_all(everything(), ~ . != "Desconocido"))
+
+  # Eliminar valores específicos no válidos
+  if ("EDAD_DIAGNOSTICO" %in% colnames(data)) {
+    data <- data %>% filter(EDAD_DIAGNOSTICO != 999)
+  }
+  if ("Nx" %in% colnames(data)) {
+    data <- data %>% filter(Nx != 999)
+  }
+  if ("TAMAÑO" %in% colnames(data)) {
+    data <- data %>% filter(TAMAÑO != 999)
+  }
+
+  # Imputación de valores perdidos
+  for (var in variables_interes) {
+    if (var %in% colnames(data)) {
+      if (is.numeric(data[[var]])) {
+        data[[var]][is.na(data[[var]])] <- mean(data[[var]], na.rm = TRUE)
+      } else if (is.factor(data[[var]]) || is.character(data[[var]])) {
+        moda <- names(which.max(table(data[[var]])))
+        data[[var]][is.na(data[[var]])] <- moda
+      }
+    }
+  }
+
+  # Detección y eliminación de valores atípicos
+  for (var in variables_interes) {
+    if (var %in% colnames(data) && is.numeric(data[[var]])) {
+      Q1 <- quantile(data[[var]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data[[var]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      limite_inferior <- Q1 - 1.5 * IQR
+      limite_superior <- Q3 + 1.5 * IQR
+      data <- data %>% filter(data[[var]] >= limite_inferior & data[[var]] <= limite_superior)
+    }
+  }
+  library(dplyr)
+  # Seleccionar solo las variables de interés
+  data <- dplyr::select(data, dplyr::all_of(variables_interes))
+
+
+  # Eliminar niveles no utilizados en factores
+  data <- droplevels(data)
+
+  return(data)
+}
+
+# Función para preprocesar el dataset
+preprocesar_datos <- function(data) {
+  
+  # Verificar si las columnas existen antes de modificarlas
+  if ("GRADO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(GRADO_CAT = case_when(
+        GRADO %in% c(1, 2) ~ "1/2",
+        GRADO == 3 ~ "3",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(GRADO_CAT = as.factor(GRADO_CAT))
+  }
+  
+  if ("HISTOLOGIA" %in% colnames(data)) {
+    data <- data %>%
+      mutate(HISTOLOGIA_CAT = case_when(
+        HISTOLOGIA == "DUCTAL" ~ "DUCTAL",
+        TRUE ~ "NO DUCTAL"
+      )) %>%
+      mutate(HISTOLOGIA_CAT = as.factor(HISTOLOGIA_CAT))
+  }
+  
+  if ("Ki67" %in% colnames(data)) {
+    data <- data %>%
+      mutate(Ki67_CAT = case_when(
+        Ki67 <= 14 ~ "<=14",
+        Ki67 > 14 ~ ">14",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(Ki67_CAT = as.factor(Ki67_CAT))
+  }
+  
+  if ("FENOTIPO_IHQ" %in% colnames(data)) {
+    data <- data %>%
+      mutate(FENOTIPO_IHQ_CAT = case_when(
+        FENOTIPO_IHQ %in% c("LUMINAL A", "LUMINAL B") ~ "LUMINAL",
+        FENOTIPO_IHQ %in% c("LUMINAL-HER2", "HER2") ~ "HER2",
+        TRUE ~ "TRIPLE NEGATIVO"
+      )) %>%
+      mutate(FENOTIPO_IHQ_CAT = as.factor(FENOTIPO_IHQ_CAT))
+  }
+  
+  if ("ESTADIO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(ESTADIO_CAT = case_when(
+        ESTADIO %in% c("I", "IA", "IB") ~ "I",
+        ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+        ESTADIO %in% c("III", "IIIA", "IIIB", "IIIC") ~ "III",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(ESTADIO_CAT = as.factor(ESTADIO_CAT))
+  }
+  
+  if ("TIPO_QT_NEOADY_OK" %in% colnames(data)) {
+    data <- data %>%
+      mutate(QT_CAT = case_when(
+        TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE") ~ "antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA", "QUIMIOTERAPIA-INMUNOTERAPIA") ~ "INMUNO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(QT_CAT = as.factor(QT_CAT))
+  }
+  
+  if ("No_ANTIBIOTICOS" %in% colnames(data)) {
+    data <- data %>%
+      mutate(No_ANTIBIOTICOS_CAT = case_when(
+        No_ANTIBIOTICOS == 1 ~ "Una vez",
+        No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(No_ANTIBIOTICOS_CAT = as.factor(No_ANTIBIOTICOS_CAT))
+  }
+  
+  if ("RCB" %in% colnames(data)) {
+    data <- data %>%
+      mutate(RCP = case_when(
+        RCB %in% c("RCB-0", "RCB-I") ~ "SI",
+        RCB %in% c("RCB-II", "RCB-III") ~ "NO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(RCP = as.factor(RCP))
+  }
+  
+  return(data)
+}
+
+detectar_asociacion <- function(data, evento, variable) {
+  resultados <- character()
+  grafico <- NULL
+  
+  resultados <- c(resultados, paste("Analizando relación entre", evento, "y", variable))
+
+  data <- data %>% mutate(across(all_of(evento), as.factor))
+
+  if (is.numeric(data[[variable]])) {
+    resultados <- c(resultados, "(Variable numérica)")
+    
+    normalidad <- shapiro.test(data[[variable]])
+    es_normal <- normalidad$p.value > 0.05
+    resultados <- c(resultados, paste("Shapiro-Wilk p-value:", round(normalidad$p.value, 4)))
+    
+    if (length(levels(data[[evento]])) == 2 && es_normal) {
+      t_test <- t.test(data[[variable]] ~ data[[evento]])
+      resultados <- c(resultados, paste("Test t de Student p-value:", round(t_test$p.value, 4)))
+      conclusion <- ifelse(t_test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                    "No existe asociación estadística entre las variables.")
+    } else {
+      metodo <- ifelse(es_normal, "pearson", "spearman")
+      test <- cor.test(data[[variable]], as.numeric(as.factor(data[[evento]])), method = metodo)
+      resultados <- c(resultados, paste("Correlación", metodo, "p-value:", round(test$p.value, 4)))
+      conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                  "No existe asociación estadística entre las variables.")
+    }
+    
+    resultados <- c(resultados, conclusion)
+    
+    grafico <- plot_ly(data, x = ~.data[[evento]], y = ~.data[[variable]], type = "box",
+                       boxpoints = "all", jitter = 0.3,
+                       marker = list(color = "#00AEDA"),
+                       line = list(color = "#002859")) %>%
+               layout(
+                      xaxis = list(title = evento),
+                      yaxis = list(title = variable))
+
+  } else if (is.factor(data[[variable]]) || is.character(data[[variable]])) {
+    resultados <- c(resultados, "(Variable categórica)")
+    
+    data <- data %>%
+      mutate(across(c(all_of(evento), all_of(variable)), as.factor))
+    
+    tabla <- table(data[[evento]], data[[variable]])
+    
+    if (any(tabla < 5)) {
+      test <- fisher.test(tabla, simulate.p.value = TRUE)
+      resultados <- c(resultados, paste("Test de Fisher p-value:", round(test$p.value, 4)))
+    } else {
+      test <- chisq.test(tabla)
+      resultados <- c(resultados, paste("Test Chi-cuadrado p-value:", round(test$p.value, 4)))
+    }
+    
+    conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                              "No existe asociación estadística entre las variables.")
+    resultados <- c(resultados, conclusion)
+
+    df_tabla <- as.data.frame(tabla)
+    names(df_tabla) <- c("Evento", "Variable", "Frecuencia")
+    
+    grafico <- plot_ly(
+      data = df_tabla,
+      x = ~Variable,
+      y = ~Evento,
+      z = ~Frecuencia,
+      type = "heatmap",
+      colors = c("#ffffff", "#00AEDA"),
+      showscale = TRUE
+    ) %>%
+    layout(
+           xaxis = list(title = variable),
+           yaxis = list(title = evento))
+  }
+
+  list(texto = resultados, grafico = grafico)
+}
+
+
+evaluar_modelo <- function(modelo, datos_validacion, variable_respuesta) {
+  library(pROC)
+  library(ggplot2)
+  library(ResourceSelection)  # Para la prueba de Hosmer-Lemeshow (opcional)
+
+  # Obtener las variables que necesita el modelo
+  vars_modelo <- all.vars(formula(modelo))[-1]
+
+  # Asegurar que los niveles de factores coincidan
+  datos_validacion_filtrados <- datos_validacion[, c(variable_respuesta, vars_modelo)]
+
+  for (var in vars_modelo) {
+    if (is.factor(model.frame(modelo)[[var]])) {
+      datos_validacion_filtrados[[var]] <- factor(
+        datos_validacion_filtrados[[var]],
+        levels = levels(model.frame(modelo)[[var]])
+      )
+    }
+  }
+
+  # Predicciones
+  probs <- predict(modelo, newdata = datos_validacion_filtrados, type = "response")
+  obs <- datos_validacion_filtrados[[variable_respuesta]]
+
+  # CURVA ROC
+  roc_obj <- roc(obs, probs)
+  plot(roc_obj, main = paste("Curva ROC - AUC:", round(auc(roc_obj), 3)), col = "#00AEDA", lwd = 2)
+
+  # CALIBRACIÓN
+  df_cal <- data.frame(obs = as.numeric(obs == "SI"), pred = probs)
+  df_cal$pred_bin <- cut(df_cal$pred, breaks = seq(0, 1, by = 0.1), include.lowest = TRUE)
+  cal_plot <- aggregate(obs ~ pred_bin, data = df_cal, mean)
+  cal_plot$pred_mean <- aggregate(pred ~ pred_bin, data = df_cal, mean)$pred
+
+  ggplot(cal_plot, aes(x = pred_mean, y = obs)) +
+    geom_line(color = "#00AEDA", linewidth = 1.5) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#002859") +
+    labs(title = "Gráfico de Calibración",
+         x = "Probabilidad predicha",
+         y = "Proporción observada") +
+    theme_minimal()
+}
+
+
+
+preparar_datos_supervivencia <- function(data) {
+  data %>%
+    mutate(
+      FECHA_INICIO_QT = as.Date(FECHA_INICIO_QT),
+      FECHA_ULTIMO_CONTROL = as.Date(FECHA_ULTIMO_CONTROL),
+      tiempo_sg = as.numeric(difftime(FECHA_ULTIMO_CONTROL, FECHA_INICIO_QT, units = "days")) / 30.44, # en meses
+      estado_SG = ifelse(`ESTADO_ULTIMO_CONTROL` == "MCE", 1, 0),
+      ab = factor(ANTIBIOTICO),
+      subtipo = factor(FENOTIPO_IHQ_CAT)
+    ) %>%
+    filter(!is.na(tiempo_sg) & tiempo_sg >= 0)
+}
+
+analisis_supervivencia <- function(data) {
+  necesarias <- c("tiempo_sg", "estado_SG", "ab", "subtipo")
+  faltantes <- necesarias[!necesarias %in% names(data)]
+  if (length(faltantes) > 0) stop(paste("Faltan variables necesarias:", paste(faltantes, collapse = ", ")))
+
+  data <- data %>% drop_na(tiempo_sg, estado_SG, ab, subtipo)
+
+  # Supervivencia global
+  km_total <- survfit(Surv(tiempo_sg, estado_SG) ~ 1, data = data)
+  g1 <- ggsurvplot(km_total, data = data, title = "Supervivencia Global", xlab = "Meses", ylab = "Prob. de supervivencia")
+
+  # Subtipos moleculares
+  km_subtipo <- survfit(Surv(tiempo_sg, estado_SG) ~ subtipo, data = data)
+  g2 <- ggsurvplot(km_subtipo, data = data, pval = TRUE, legend.title = "Subtipo", title = "SG por subtipo tumoral")
+
+  # Uso de antibióticos
+  km_ab <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = data)
+  g3 <- ggsurvplot(km_ab, data = data, pval = TRUE, legend.title = "Antibióticos", title = "SG por uso de antibióticos")
+
+  # Por subtipo y antibióticos
+  g4_list <- list()
+  for (tipo in levels(data$subtipo)) {
+    subdata <- data %>% filter(subtipo == tipo)
+    if (nrow(subdata) >= 10 && length(unique(subdata$ab)) > 1) {
+      fit_sub <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = subdata)
+      g4_list[[tipo]] <- ggsurvplot(fit_sub, data = subdata, pval = TRUE,
+                                    title = paste("SG por AB en subtipo:", tipo),
+                                    legend.title = "Antibióticos")
+    }
+  }
+
+  return(list(
+    global = g1,
+    por_subtipo = g2,
+    por_ab = g3,
+    por_subtipo_y_ab = g4_list
+  ))
+}
+
+
+
+
+
+```
+
+# Estadística descriptiva
+
+El conjunto de datos cuenta con las siguientes variables:
+
+```{r, eval=TRUE}
+muestra_700_UGC_perdidos <- read_excel("muestra_700_UGC_perdidos.xlsx")
+muestra_700_UGC_perdidos <- muestra_700_UGC_perdidos %>%
+  mutate_if(is.character, as.factor)
+muestra_700_UGC_perdidos$Tn <- factor(muestra_700_UGC_perdidos$Tn)
+muestra_700_UGC_perdidos$GRADO <- factor(muestra_700_UGC_perdidos$GRADO)
+muestra_700_UGC_perdidos$Nx <- factor(muestra_700_UGC_perdidos$Nx)
+names(muestra_700_UGC_perdidos)[names(muestra_700_UGC_perdidos) == "ESTADO_ULTIMO_\nCONTROL"] <- "ESTADO_ULTIMO_CONTROL"
+skim_without_charts(muestra_700_UGC_perdidos)
+```
+
+Entre todas las variables disponibles en el conjunto de datos, se han seleccionado las siguientes por su relevancia para el análisis.
+
+::: panel-tabset
+## EDAD_DIAGNOSTICO
+
+Edad en años en la que se realizó el diagnóstico del cáncer.
+
+## ESTADO_MENOPAUSICO
+
+Estado menopáusico de la paciente al momento del diagnóstico (premenopáusica, menopáusica o desconocido).
+
+## HISTOLOGIA
+
+Tipo histológico del tumor, según clasificación patológica.
+
+## GRADO
+
+Grado histológico del tumor.
+
+## KI67_DICOT
+
+Expresión del marcador de proliferación celular Ki-67.
+
+## FENOTIPO_IHQ
+
+Clasificación del tumor según inmunohistoquímica.
+
+## TAMAÑO
+
+Tamaño del tumor en centímetros.
+
+## Tn
+
+Clasificación T del tumor.
+
+## Nx
+
+Estado ganglionar.
+
+## ESTADIO
+
+Estadio clínico del cáncer.
+
+## TIPO_CIRUGIA
+
+Tipo de cirugía realizada.
+
+## TIPO_QT_NEOADY_OK
+
+Tipo de quimioterapia neoadyuvante administrada.
+
+## RCP
+
+Respuesta completa patológica tras el tratamiento.
+
+## HT_ADY_OK
+
+Hormonoterapia adyuvante recibida.
+
+## RE Y RP
+
+Receptores hormonales de estrógeno (RE) y progesterona (RP).
+
+## RETRASOS
+
+Indica si hubo o no retrasos.
+:::
+
+En primer lugar se ha procedido con el estudio individual de cada **variable de interés** teniendo en cuenta tanto el tipo de variable como bien su resumen estadístico que se ha acompañado con representaciones gráficas.
+
+Para el **análisis univariante** de estas variables, se ha implementado una función que **automatiza** el proceso para las variables de interés del conjunto. De esta forma, conseguimos conocer qué variables son numéricas y cuáles son categóricas. También, se muestran resúmenes estadísticos de cada una de las variables junto a representaciones gráficas.
+
+```{r}
+variables_a_analizar <- c("EDAD_DIAGNOSTICO", "ESTADO_MENOPAUSICO", "HISTOLOGIA", "GRADO", "KI67_DICOT", "Ki67", "FENOTIPO_IHQ", "TAMAÑO", "Tn", "Nx", "ESTADIO", "TIPO_CIRUGIA", "TIPO_QT_NEOADY_OK", "RCB", "HT_ADY_OK", "RE", "RP", "RETRASOS", "No_ANTIBIOTICOS", "FECHA_ULTIMO_CONTROL", "FECHA_INICIO_QT", "ESTADO_ULTIMO_CONTROL", "ANTIBIOTICO")
+resultados <- analizar_variables(muestra_700_UGC_perdidos, variables_a_analizar)
+
+Numericas <- names(resultados$Numericas)  # Ver nombres de variables numéricas
+Categoricas <- names(resultados$Categoricas)  # Ver nombres de variables categóricas
+
+```
+
+Una vez conocidas las variables y el tipo de las mismas se va a proceder con el análisis estadístico para cada una.
+
+## Variables numéricas
+
+::: panel-tabset
+### Edad Diagnóstico
+
+```{r}
+summary(muestra_700_UGC_perdidos$EDAD_DIAGNOSTICO)
+```
+
+```{r,echo=FALSE,results='asis'}
+resumen <- capture.output(summary(muestra_700_UGC_perdidos$EDAD_DIAGNOSTICO))
+cat("```\n", paste(resumen, collapse = "\n"), "\n```")
+```
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "EDAD_DIAGNOSTICO")
+```
+
+### Tamaño
+
+```{r}
+summary(muestra_700_UGC_perdidos$TAMAÑO)
+```
+
+```{r,echo=FALSE,results='asis'}
+resumen <- capture.output(summary(muestra_700_UGC_perdidos$TAMAÑO))
+cat("```\n", paste(resumen, collapse = "\n"), "\n```")
+```
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TAMAÑO")
+```
+
+### RE
+
+```{r}
+summary(muestra_700_UGC_perdidos$RE)
+```
+
+```{r,echo=FALSE,results='asis'}
+resumen <- capture.output(summary(muestra_700_UGC_perdidos$RE))
+cat("```\n", paste(resumen, collapse = "\n"), "\n```")
+```
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RE")
+```
+
+### RP
+
+```{r}
+summary(muestra_700_UGC_perdidos$RP)
+```
+
+```{r,echo=FALSE,results='asis'}
+resumen <- capture.output(summary(muestra_700_UGC_perdidos$RP))
+cat("```\n", paste(resumen, collapse = "\n"), "\n```")
+```
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RP")
+```
+:::
+
+## Variables categóricas {.tabset .tabset-fade .tabset-pills}
+
+::: panel-tabset
+### Estado menopáusico
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "ESTADO_MENOPAUSICO")
+```
+
+### Histología
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "HISTOLOGIA")
+```
+
+### Grado
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "GRADO")
+```
+
+### Ki67 Dicot
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "KI67_DICOT")
+```
+
+### Fenotipo IHQ
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "FENOTIPO_IHQ")
+```
+
+### Tn
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "Tn")
+```
+
+### Nx
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "Nx")
+```
+
+### Estadio
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "ESTADIO")
+```
+
+### Tipo Cirugía
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TIPO_CIRUGIA")
+```
+
+### Tipo QT Neoady Ok
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "TIPO_QT_NEOADY_OK")
+```
+
+### RCB
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RCB")
+```
+
+### Ht Ady Ok
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "HT_ADY_OK")
+```
+
+### Retrasos
+
+```{r}
+visualizar_variable(muestra_700_UGC_perdidos, "RETRASOS")
+```
+:::
+
+## Limpieza y filtrado de datos {.tabset .tabset-fade .tabset-pills}
+
+Se va a proceder con la detección e imputación de valores perdidos, así como la identificación de valores atípicos. También, se realizará un preprocesamiento de los datos que conlleva una categorización y recodificación de variables para estratificar adecuadamente la población de pacientes. De esta forma pasamos de 700 muestras a 217.
+
+```{r}
+# Llamar la función y procesar el dataset
+df_procesado <- procesar_datos(muestra_700_UGC_perdidos, variables_a_analizar)
+
+# Mostrar el dataset procesado
+skim_without_charts(df_procesado)
+```
+
+## Categorización y recodificación de variables
+
+Se han creado variables categóricas nuevas a partir de las originales para simplificar la interpretación. Los criterios utilizados han sido:
+
+-   **GRADO_CAT**: agrupación en dos categorías:
+    -   `1/2` → Grado 1 o 2
+    -   `3` → Grado 3
+-   **HISTOLOGIA_CAT**:
+    -   `DUCTAL` → Tumores ductales
+    -   `NO DUCTAL` → Todos los demás tipos histológicos
+-   **Ki67_CAT**:
+    -   `<=14` → Marcador Ki-67 menor o igual a 14%
+    -   `>14` → Mayor a 14%
+-   **FENOTIPO_IHQ_CAT**:
+    -   `LUMINAL` → Fenotipos Luminal A o B
+    -   `HER2` → Tumores HER2 o Luminal-HER2
+    -   `TRIPLE NEGATIVO` → Resto
+-   **ESTADIO_CAT**:
+    -   `I` → Estadio I, IA, IB
+    -   `II` → II, IIA, IIB
+    -   `III` → III, IIIA, IIIB, IIIC
+-   **QT_CAT**:
+    -   `NO antiHER2` → Quimioterapia sin antiHER2
+    -   `antiHER2` → Combinación con fármacos antiHER2
+    -   `INMUNO` → Incluye inmunoterapia
+-   **No_ANTIBIOTICOS**:
+    -   `Una vez` → 1 ciclo antibiótico
+    -   `Dos veces o más` → 2 o más ciclos
+-   **RCP**: respuesta completa patológica calculada a partir de RCB:
+    -   `SI` → RCB-0 o RCB-1
+    -   `NO` → RCB-2 o RCB-3
+-   **EDAD_DIAGNOSTICO:**
+    -   `0-39`
+    -   `40-49`
+    -   `50-59`
+    -   `60-69`
+    -   `70-79`
+    -   `≥80`
+
+```{r}
+
+df_procesado$EDAD_DIAGNOSTICO <- cut(df_procesado$EDAD_DIAGNOSTICO, breaks = c(-Inf, 39, 49, 59,69,79, Inf), labels = c("0-39", "40-49", "50-59", "60-69","70-79","≥80"))
+df_procesado$EDAD_DIAGNOSTICO <- as.factor(df_procesado$EDAD_DIAGNOSTICO)
+
+# Seleccionar variables numéricas
+numeric_vars <- sapply(df_procesado, is.numeric)
+
+# Excluir 'Ki67' y 'No_ANTIBIOTICOS' de la normalización
+vars_a_normalizar <- setdiff(names(df_procesado)[numeric_vars], c("Ki67", "No_ANTIBIOTICOS"))
+
+# Normalizar solo esas variables
+normalized_data <- scale(df_procesado[, vars_a_normalizar])
+
+# Reemplazar las columnas originales por las normalizadas
+df_procesado[, vars_a_normalizar] <- normalized_data
+
+dataset_recodificado <- preprocesar_datos(df_procesado)
+
+skim_without_charts(dataset_recodificado)
+```
+
+Finalmente, para poder apreciar los cambios resurgidos de estos procesos que se han realizado, vamos a llamar a la función de visualización de variables para ver los cambios conseguidos en estas.
+
+::: panel-tabset
+### Edad Diagnóstico
+
+```{r}
+visualizar_variable(dataset_recodificado, "EDAD_DIAGNOSTICO")
+```
+
+### Tamaño
+
+```{r}
+visualizar_variable(dataset_recodificado, "TAMAÑO")
+```
+
+### RE
+
+```{r}
+visualizar_variable(dataset_recodificado, "RE")
+```
+
+### RP
+
+```{r}
+visualizar_variable(dataset_recodificado, "RP")
+```
+
+### Estado menopáusico
+
+```{r}
+visualizar_variable(dataset_recodificado, "ESTADO_MENOPAUSICO")
+```
+
+### Grado
+
+```{r}
+visualizar_variable(dataset_recodificado, "GRADO_CAT")
+```
+
+### Ki67
+
+```{r}
+visualizar_variable(dataset_recodificado, "Ki67_CAT")
+```
+
+### Histología
+
+```{r}
+visualizar_variable(dataset_recodificado, "HISTOLOGIA_CAT")
+```
+
+### Fenotipo IHQ
+
+```{r}
+visualizar_variable(dataset_recodificado, "FENOTIPO_IHQ_CAT")
+```
+
+### Estadio
+
+```{r}
+visualizar_variable(dataset_recodificado, "ESTADIO_CAT")
+```
+
+### Tipo QT Neoady OK
+
+```{r}
+visualizar_variable(dataset_recodificado, "QT_CAT")
+```
+
+### No Antibióticos
+
+```{r}
+visualizar_variable(dataset_recodificado, "No_ANTIBIOTICOS")
+```
+
+### RCP
+
+```{r}
+visualizar_variable(dataset_recodificado, "RCP")
+```
+:::
+
+# Análisis de asociación/correlación {.tabset .tabset-fade .tabset-pills}
+
+Para evaluar la posible relación entre la respuesta completa patológica (RCP) y las características de los pacientes, se emplearán análisis estadísticos adecuados a la naturaleza de cada variable. En el caso de las variables cualitativas, como el tipo de tratamiento o el estadio del tumor, se utilizarán pruebas diseñadas para comparar proporciones entre distintos grupos, como la prueba de Chi-cuadrado o, en situaciones donde el tamaño de la muestra sea reducido, la prueba exacta de Fisher. Estas herramientas permiten determinar si existen diferencias significativas en la distribución de estas características entre los pacientes que lograron o no una RCP.
+
+Para las variables cuantitativas, como la edad del paciente o el índice de proliferación tumoral Ki67, se aplicarán pruebas que permitan evaluar diferencias en valores numéricos entre los grupos analizados. La prueba t de Student se empleará para comparar los valores promedio de estas variables entre los pacientes con y sin RCP, mientras que los coeficientes de correlación de Pearson o Spearman ayudarán a medir la intensidad y dirección de la relación entre estas características y la RCP.
+
+A través de estos análisis se buscarán patrones o tendencias que puedan sugerir una asociación entre las características clínicas y patológicas de los pacientes y su respuesta al tratamiento. Los resultados obtenidos contribuirán a una mejor comprensión de los factores que podrían influir en la probabilidad de alcanzar una RCP, proporcionando información valiosa para optimizar estrategias terapéuticas y mejorar la toma de decisiones clínicas.
+
+## Explicación teórica
+
+Antes de comenzar con el análisis estadístico, es fundamental comprender qué tipo de variables tenemos y cómo tratarlas según su naturaleza. Las técnicas estadísticas que se aplican varían dependiendo de si las variables son **categóricas** o **numéricas**.
+
+### Relación entre dos variables **categóricas**
+
+Para analizar la relación entre dos variables categóricas, se comienza generando una **tabla de contingencia**, que nos muestra cuántas observaciones hay en cada combinación de categorías.
+
+Dependiendo del número de observaciones en las celdas de la tabla, se elige uno de estos tests:
+
+-   `Si algún valor < 5` → Test de Fisher
+
+-   `Si todos los valores ≥ 5` → Test Chi-Cuadrado
+
+Luego, se interpreta el resultado a través del **p-valor**:
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Interpretación del p-valor
+
+-   Si **p \< 0.05**, se rechaza la hipótesis nula → **Existe asociación estadística** entre las variables.
+
+<!-- -->
+
+-   Si **p ≥ 0.05**, no se rechaza la hipótesis nula → **No hay evidencia de asociación.**
+:::
+
+### Relación entre una variable **categórica** y una **numérica**
+
+En este caso, el tipo de test dependerá de si la variable numérica sigue una distribución normal. Esto se evalúa con el **test de Shapiro-Wilk**:
+
+-   `Si p < 0.05` → No hay normalidad → Test de Wilcoxon
+
+-   `Si p ≥ 0.05` → Hay normalidad → Test t de Student
+
+Nuevamente, el resultado se interpreta con el p-valor del test:
+
+::: {.callout-tip appearance="simple" icon="false"}
+## ¿Existe asociación?
+
+-   Si **p \< 0.05**, se detecta una diferencia significativa entre los grupos.
+
+<!-- -->
+
+-   Si **p ≥ 0.05**, no hay evidencia estadística de diferencia.
+:::
+
+### Relación entre dos variables **numéricas**
+
+Cuando ambas variables son numéricas, se verifica su distribución con el **test de Shapiro-Wilk**. En función de los resultados, se selecciona el test de correlación apropiado:
+
+-   `Si ambas variables NO son normales` → Correlación de Spearman
+
+-   `Si ambas variables son normales` → Correlación de Pearson
+
+::: {.callout-important appearance="simple" icon="false"}
+## Importante
+
+Para aplicar el test de Pearson, **ambas variables deben seguir distribución normal**. Es decir, **ambas** deben tener **p ≥ 0.05** en el test de Shapiro-Wilk.
+:::
+
+Finalmente, el p-valor del test de correlación nos indicará si existe una relación estadísticamente significativa entre ambas variables.
+
+## Aplicación teórica
+
+::: panel-tabset
+### Edad diagnóstico
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","EDAD_DIAGNOSTICO")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "EDAD_DIAGNOSTICO")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Estado menopáusico
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","ESTADO_MENOPAUSICO")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "ESTADO_MENOPAUSICO")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Tamaño
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","TAMAÑO")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "ESTADO_MENOPAUSICO")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Tn
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","Tn")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "Tn")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Nx
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","Nx")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "Nx")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Tipo Cirugía
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","TIPO_CIRUGIA")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "TIPO_CIRUGIA")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Ht Ady Ok
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","HT_ADY_OK")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "HT_ADY_OK")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### RE
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","RE")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "RE")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### RP
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","RP")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "RP")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Grado
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","GRADO_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "GRADO_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Histología
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","HISTOLOGIA_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "HISTOLOGIA_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Ki67
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","Ki67_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "Ki67_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Fenotipo IHQ
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","FENOTIPO_IHQ_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "FENOTIPO_IHQ_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Estadio
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","ESTADIO_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "ESTADIO_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### Tipo QT Neoady OK
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","QT_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "QT_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+### No Antibióticos
+
+```{r,eval=FALSE}
+detectar_asociacion(dataset_recodificado, "RCP","No_ANTIBIOTICOS_CAT")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(dataset_recodificado, "RCP", "No_ANTIBIOTICOS_CAT")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+:::
+
+## Interpretaciones
+
+Tras el estudio, se han comprobado que de las **16** variables analizadas, solamente la mitad constituye el grupo de variables con mayor evidencia estadística. Entre estas encontramos **FENOTIPO_IHQ_CAT**, **HT_ADY_OK**, **QT_CAT**, **RE**...
+
+Por otro lado, en el grupo que incluye a las variables que no parecen presentar relación significativa con la variable evento están **TIPO_CIRUGIA**, **GRADO_CAT**, **ESTADO_MENOPAUSICO**, **No_ANTIBIOTICOS_CAT**...
+
+Es cierto que estos resultados pueden verse perjudicados por el uso de Fisher (simulado) dado que suponía mucho esfuerzo para el equipo y el programa el realizar el test completo. Por ende, aquellas variables que se consideren convenientes van a ser utilizadas para el análisis multivariante.
+
+```{r}
+kable(
+  data.frame(
+    Variable = c(
+      "FENOTIPO_IHQ_CAT", "HT_ADY_OK", "QT_CAT",
+      "RE", "RP", "Ki67_CAT", "EDAD_DIAGNOSTICO", "TAMAÑO"
+    ),
+    Tipo = c(
+      "Categórica", "Categórica", "Categórica",
+      "Numérica", "Numérica", "Categórica", "Numérica", "Numérica"
+    ),
+    `Test estadístico` = c(
+      "Chi-cuadrado", "Fisher", "Fisher",
+      "Spearman", "Spearman", "Fisher", "Spearman", "Spearman"
+    ),
+    `p-valor` = c(
+      "2.4e-07", "0.0005", "0.0005",
+      "1.18e-06", "0.0003", "0.0152", "0.0109", "0.015"
+    ),
+    Asociación = c(
+      "Fuerte", "Fuerte", "Fuerte",
+      "Negativa (rho = -0.32)", "Negativa (rho = -0.24)", 
+      "Positiva (OR ≈ 3.81)", "Negativa (rho = -0.17)", "Negativa (rho = -0.16)"
+    )
+  ),
+  caption = "Tabla 1. Variables con asociación estadísticamente significativa con RCP.",
+  align = "lcccl"
+)
+
+kable(
+  data.frame(
+    Variable = c(
+      "No_ANTIBIOTICOS_CAT", "TIPO_CIRUGIA", "ESTADIO_CAT", "Tn", 
+      "Nx", "ESTADO_MENOPAUSICO", "GRADO_CAT", "HISTOLOGIA_CAT"
+    ),
+    Tipo = c(
+      "Categórica", "Categórica", "Categórica", "Categórica", 
+      "Categórica", "Categórica", "Categórica", "Categórica"
+    ),
+    `Test estadístico` = c(
+      "Chi-cuadrado", "Fisher", "Chi-cuadrado", "Chi-cuadrado",
+      "Fisher", "Fisher", "Chi-cuadrado", "Chi-cuadrado"
+    ),
+    `p-valor` = c(
+      "1", "0.884", "0.560", "0.411", 
+      "0.137", "0.103", "0.263", "0.195"
+    ),
+    Comentario = c(
+      "Sin asociación alguna", "Muy baja asociación", "Baja", "Baja",
+      "Baja", "Ligeramente no significativa", "No significativa", "No significativa"
+    )
+  ),
+  caption = "Tabla 2. Variables sin asociación estadísticamente significativa con RCP.",
+  align = "lcccl"
+)
+```
+
+# Análisis multivariante
+
+Se utilizarán métodos estadísticos avanzados para analizar cómo se relacionan varias variables entre sí y cuáles de ellas tienen mayor influencia sobre la probabilidad de que ocurra una respuesta completa patológica (RCP). En particular, se aplicará la regresión logística, una técnica que permite predecir la probabilidad de que ocurra un evento (en este caso, la RCP) a partir de otras variables. Luego, se evaluará la importancia de cada una de estas variables en el modelo, analizando factores como la significancia de los coeficientes (qué tan fuertes son las relaciones) y la calidad del modelo en general para ver cuán bien está prediciendo la RCP.
+
+## Explicación teórica
+
+Con el objetivo de construir modelos que sean **eficientes, interpretables y clínicamente relevantes**, se implementarán técnicas de selección automática de variables. Estas técnicas permiten identificar un subconjunto óptimo de predictores basado en su contribución al modelo y a la explicación del evento `RCP`.
+
+### Técnicas de Selección Automática {#sec-seleccionvar}
+
+Se utilizarán tres enfoques clásicos:
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección hacia adelante (Forward Selection)
+
+Parte de un modelo vacío e incorpora variables **una por una**, eligiendo en cada paso aquella que más mejora el modelo (según un criterio como AIC o BIC).
+
+Ventaja: útil cuando hay muchas variables y se busca simplicidad.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección hacia atrás (Backward Elimination)
+
+Parte de un modelo completo (con todas las variables) y elimina **progresivamente** las variables menos útiles.
+
+Ventaja: considera la interacción total de las variables desde el inicio.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección bidireccional (Stepwise)
+
+Combina ambos métodos: puede añadir o quitar variables en cada paso, dependiendo de si mejoran o no el modelo.
+
+Ventaja: más flexible y generalmente logra modelos equilibrados.
+:::
+
+### Aplicación a Distintos Conjuntos de Variables
+
+Para comprender cómo influyen las distintas variables en el modelo y validar el valor predictivo de la información seleccionada previamente, se aplicarán los métodos de selección automática a **tres conjuntos de variables**:
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Modelo A: Variables Signficativas
+
+Solo incluye aquellas variables que, en el análisis previo, mostraron una **asociación estadísticamente significativa** con \`RCP\`.
+
+Objetivo: construir un modelo compacto y eficaz.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Modelo B: Variables no Significativas
+
+Incluye únicamente las variables que **no mostraron asociación estadística**, pero se evaluará si pueden aportar valor en conjunto.
+
+Objetivo: explorar posibles efectos combinados o no evidentes en análisis univariantes.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Modelo C: Todas las Variables
+
+Considera todas las variables, independientemente de su significancia previa.
+
+Objetivo: comparar el rendimiento del modelo global frente a los anteriores y verificar si hay variables descartadas prematuramente que son útiles.
+:::
+
+### Evaluación del Modelo
+
+Cada modelo se evaluará en función de:
+
+-   Criterios de información (AIC / BIC).
+
+-   Calidad del ajuste (pseudo-R², estadísticos de bondad de ajuste).
+
+-   Interpretabilidad clínica y parsimonia del modelo.
+
+La comparación de los tres modelos permitirá determinar no solo qué variables resultan más útiles, sino también **cómo influye la selección previa basada en pruebas de significancia en la calidad del modelo final**.
+
+## Aplicación teórica
+
+A continuación se dara la selección de variables para cada uno de los modelos predefinidos.
+
+### Modelo A: Variables significativas
+
+Empezamos por la selección de variables:
+
+::: panel-tabset
+#### Forward Selection
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+significativas <- subset(dataset_recodificado, select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+significativas <- na.omit(significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modA_forward <- stepAIC(mod_basico, direction = "forward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO))
+```
+
+```{r, echo=FALSE}
+# Filtrado
+significativas <- subset(dataset_recodificado, 
+                         select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+significativas <- na.omit(significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  modA_forward <- stepAIC(mod_basico, direction = "forward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Backward Elimination
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+significativas <- subset(dataset_recodificado, select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+significativas <- na.omit(significativas)
+
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modA_backward <- stepAIC(mod_completo, direction = "backward", 
+                      scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO))
+```
+
+```{r, echo=FALSE}
+# FILTRADO DEL DATASET
+significativas <- subset(dataset_recodificado, select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+significativas <- na.omit(significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+modA_backward <- stepAIC(mod_completo, direction = "backward", 
+                      scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Stepwise
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+significativas <- subset(dataset_recodificado, select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+significativas <- na.omit(significativas)
+
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modA_both <- stepAIC(mod_completo, direction = "both")
+```
+
+```{r, echo=FALSE}
+# FILTRADO DEL DATASET
+significativas <- subset(dataset_recodificado, select = c(FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+significativas <- na.omit(significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = significativas, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  modA_both <- stepAIC(mod_completo, direction = "both")
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+En cuanto al resumen de cada uno de los ajustes:
+
+::: panel-tabset
+## Forward Selection
+
+```{r, eval=FALSE}
+summary(modA_forward)
+```
+
+```{r, echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modA_forward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Backward Elimination
+
+```{r, eval=FALSE}
+summary(modA_backward)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modA_backward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Stepwise
+
+```{r, eval=FALSE}
+summary(modA_both)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modA_both)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+### Modelo B: Variables no Significativas
+
+Empezamos por la selección de variables:
+
+::: panel-tabset
+#### Forward Selection
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+
+no_significativas <- na.omit(no_significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modB_forward <- stepAIC(mod_basico, direction = "forward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~No_ANTIBIOTICOS_CAT+ TIPO_CIRUGIA+ ESTADIO_CAT+ Tn+ Nx+ ESTADO_MENOPAUSICO+ GRADO_CAT+ HISTOLOGIA_CAT))
+```
+
+```{r, echo=FALSE}
+# Filtrado
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+no_significativas <- na.omit(no_significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  modB_forward <- stepAIC(mod_basico, direction = "forward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~No_ANTIBIOTICOS_CAT+ TIPO_CIRUGIA+ ESTADIO_CAT+ Tn+ Nx+ ESTADO_MENOPAUSICO+ GRADO_CAT+ HISTOLOGIA_CAT))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Backward Elimination
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+
+no_significativas <- na.omit(no_significativas)
+
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modB_backward <- stepAIC(mod_completo, direction = "backward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~No_ANTIBIOTICOS_CAT+ TIPO_CIRUGIA+ ESTADIO_CAT+ Tn+ Nx+ ESTADO_MENOPAUSICO+ GRADO_CAT+ HISTOLOGIA_CAT))
+```
+
+```{r, echo=FALSE}
+# FILTRADO DEL DATASET
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+
+no_significativas <- na.omit(no_significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  modB_backward <- stepAIC(mod_completo, direction = "backward", 
+                      scope=list(lower=mod_basico,
+                                 upper=~No_ANTIBIOTICOS_CAT+ TIPO_CIRUGIA+ ESTADIO_CAT+ Tn+ Nx+ ESTADO_MENOPAUSICO+ GRADO_CAT+ HISTOLOGIA_CAT))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Stepwise
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+
+no_significativas <- na.omit(no_significativas)
+
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+modB_both <- stepAIC(mod_completo, direction = "both")
+```
+
+```{r, echo=FALSE}
+# FILTRADO DEL DATASET
+no_significativas <- subset(dataset_recodificado, select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO, GRADO_CAT, HISTOLOGIA_CAT, RCP))
+
+no_significativas <- na.omit(no_significativas)
+
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = no_significativas, 
+                    family = binomial("logit"))
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = no_significativas, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  modB_both <- stepAIC(mod_completo, direction = "both")
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+En cuanto al resumen de cada uno de los ajustes:
+
+::: panel-tabset
+## Forward Selection
+
+```{r, eval=FALSE}
+summary(modB_forward)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modB_forward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Backward Elimination
+
+```{r, eval=FALSE}
+summary(modB_backward)
+```
+
+```{r, echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modB_backward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Stepwise
+
+```{r, eval=FALSE}
+summary(modB_both)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(modB_both)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+### Modelo C: Todas las Variables
+
+Empezamos por la selección de variables:
+
+::: panel-tabset
+#### Forward Selection
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET 
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas) 
+
+# CREACION DE MODELOS 
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas,family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas,family = binomial("logit"))  
+
+# APLICACIÓN DEL AJUSTE 
+modC_forward <- stepAIC(mod_basico, direction = "forward",                        scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO+ No_ANTIBIOTICOS_CAT + TIPO_CIRUGIA+ ESTADIO_CAT+Tn + Nx+  ESTADO_MENOPAUSICO+  GRADO_CAT+ HISTOLOGIA_CAT))
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Filtrado 
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas)
+# CREACION DE MODELOS 
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas,family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas,family = binomial("logit"))  
+ # Captura de salida del stepAIC 
+salida <- capture.output({   modC_forward <- stepAIC(mod_basico, direction = "forward",                        scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO+ No_ANTIBIOTICOS_CAT + TIPO_CIRUGIA+ ESTADIO_CAT+Tn + Nx+  ESTADO_MENOPAUSICO+  GRADO_CAT+ HISTOLOGIA_CAT)) }) 
+
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Backward Elimination
+
+```{r, eval=FALSE}
+# FILTRADO DEL DATASET 
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas)
+# CREACION DE MODELOS
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas,family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas,family = binomial("logit"))  
+# APLICACIÓN DEL AJUSTE 
+modC_backward <- stepAIC(mod_completo, direction = "backward",                        scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO+ No_ANTIBIOTICOS_CAT + TIPO_CIRUGIA+ ESTADIO_CAT+Tn + Nx+  ESTADO_MENOPAUSICO+  GRADO_CAT+ HISTOLOGIA_CAT))
+```
+
+```{r, echo=FALSE,warning=FALSE}
+# FILTRADO DEL DATASET 
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas)
+# CREACION DE MODELOS 
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas, family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas, family = binomial("logit"))  
+
+# Captura de salida del stepAIC 
+salida <- capture.output({   modC_backward <- stepAIC(mod_completo, direction = "backward",                        scope=list(lower=mod_basico,upper=~FENOTIPO_IHQ_CAT+HT_ADY_OK+QT_CAT+RE+ RP+Ki67_CAT+EDAD_DIAGNOSTICO+TAMAÑO+ No_ANTIBIOTICOS_CAT + TIPO_CIRUGIA+ ESTADIO_CAT+Tn + Nx+  ESTADO_MENOPAUSICO+  GRADO_CAT+ HISTOLOGIA_CAT))})  
+
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Stepwise
+
+```{r, eval=FALSE}
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas)  
+# CREACION DE MODELOS 
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas, family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas, family = binomial("logit"))  
+# APLICACIÓN DEL AJUSTE
+modC_both <- stepAIC(mod_completo, direction = "both")
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# FILTRADO DEL DATASET 
+mixtas <- subset(dataset_recodificado, 
+                 select = c(No_ANTIBIOTICOS_CAT, TIPO_CIRUGIA, ESTADIO_CAT, Tn, Nx, ESTADO_MENOPAUSICO,
+                            GRADO_CAT, HISTOLOGIA_CAT, FENOTIPO_IHQ_CAT, HT_ADY_OK, QT_CAT, RE, 
+                            RP, Ki67_CAT, EDAD_DIAGNOSTICO, TAMAÑO, RCP))
+
+mixtas <- na.omit(mixtas)  
+# CREACION DE MODELOS 
+mod_completo <- glm((RCP=="SI")*1 ~ ., data = mixtas, family = binomial("logit")) 
+mod_basico <- glm((RCP=="SI")*1 ~ 1, data = mixtas, family = binomial("logit"))  
+# Captura de salida del stepAIC
+salida <- capture.output({   modC_both <- stepAIC(mod_completo, direction = "both") })  
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+En cuanto al resumen de cada uno de los ajustes:
+
+::: panel-tabset
+## Forward Selection
+
+```{r, eval=FALSE}
+summary(modC_forward)
+```
+
+```{r, echo=FALSE}
+# Captura de salida del stepAIC 
+salida <- capture.output({   summary(modC_forward) })  
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Backward Elimination
+
+```{r, eval=FALSE}
+summary(modC_backward)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC 
+salida <- capture.output({   summary(modC_backward) })  
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Stepwise
+
+```{r, eval=FALSE}
+summary(modC_both)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC 
+salida <- capture.output({   summary(modC_both) })  
+# Mostrarlo como bloque de código 
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+## Interpretaciones
+
+### Modelo A
+
+Para el **modelo A**, se ha comprobado que la fórmula del modelo final es
+
+`RCP ~ FENOTIPO_IHQ_CAT + HT_ADY_OK + TAMAÑO + RP + Ki67_CAT`
+
+con idénticos valores estadísticos en los 3 modelos de selección, lo que sugiere una **alta estabilidad del proceso de selección**.\
+
+| Métrica           | Valor  |
+|-------------------|--------|
+| AIC               | 228.7  |
+| Residual deviance | 202.70 |
+| Iteraciones       | 13     |
+
+Los resultados del modelo sugieren que el fenotipo tumoral, el uso (o no) de hormonoterapia adyuvante, el tamaño tumoral, la expresión de receptores de progesterona (RP) y el índice de proliferación (Ki67) tienen un impacto relevante sobre la probabilidad de alcanzar una respuesta completa patológica (RCP).
+
+En particular, el fenotipo triple negativo se asocia significativamente con una menor probabilidad de RCP. Aunque esto puede parecer contraintuitivo dependiendo del esquema de tratamiento, es coherente con la alta heterogeneidad biológica de este subtipo.
+
+Por otro lado, no recibir hormonoterapia adyuvante se relaciona con una mayor probabilidad de RCP. Esto probablemente actúa como un indicador indirecto de subtipos tumorales más agresivos, como el triple negativo, que suelen ser más sensibles a la quimioterapia pero no hormonodependientes.\
+
+### Modelo B
+
+Para el **modelo B** cuya fórmula final es
+
+`RCP ~ ESTADIO_CAT + Nx + GRADO_CAT`
+
+| Métrica           | Valor  |
+|-------------------|--------|
+| AIC               | 122.42 |
+| Residual deviance | 108.42 |
+| Iteraciones       | 15     |
+
+En los tres enfoques de selección de variables para el Modelo B (forward, backward y stepwise), la variable **GRADO_CAT3** (probablemente grado histológico 3) aparece consistentemente como un factor significativamente asociado a la probabilidad de respuesta completa patológica (RCP), con un efecto positivo.
+
+En los modelos backward y stepwise (idénticos en este caso), también se identifica como significativa la categoría **Nx2** (clasificación ganglionar), que se asocia negativamente con la RCP. El valor extremo y no significativo de **Nx3** sugiere un bajo número de casos o posible colinealidad.
+
+El modelo forward es más simple, incluyendo solo **GRADO_CAT3**, con mejor parsimonia pero menor ajuste. Los modelos backward y stepwise incorporan más variables, logrando un menor deviance residual aunque con mayor AIC.
+
+### Modelo C
+
+En el **modelo C** se obtienen dos fórmulas finales
+
+`RCP ~ RE + QT_CAT + Ki67_CAT`
+
+`RCP ~ ESTADIO_CAT + Nx + GRADO_CAT + FENOTIPO_IHQ_CAT + HT_ADY_OK + Ki67_CAT + TAMAÑO`
+
+| Métrica           | Forward | Backward/Stepwise |
+|-------------------|---------|-------------------|
+| AIC               | 106.90  | 107.89            |
+| Residual deviance | 96.90   | 73.89             |
+| Iteraciones       | 17      | 17                |
+
+En los tres enfoques de selección de variables para el modelo C, la variable **Ki67_CAT\>14** (indicador de alta proliferación celular) aparece de manera consistente, aunque no es significativa en ninguno de los modelos, probablemente debido a alta varianza.
+
+En el modelo **forward**, el receptor de estrógenos (RE) muestra una asociación negativa significativa con la probabilidad de respuesta completa patológica (RCP), mientras que ciertos esquemas de quimioterapia (QT_CATNO antiHER2) también presentan significación.
+
+En los modelos **backward y stepwise**, se observa una asociación negativa significativa de la categoría **Nx2** (afectación ganglionar) con la RCP. Además, el **fenotipo triple negativo** (FENOTIPO_IHQ_CATTRIPLE NEGATIVO) se asocia significativamente de forma negativa con la RCP, lo cual es coherente con su comportamiento clínico más agresivo.
+
+La variable **TAMAÑO** del tumor también muestra una tendencia negativa marginalmente significativa (p ≈ 0.052), lo que podría indicar que tumores más grandes tienen menos probabilidad de lograr RCP.
+
+Aunque el modelo **forward** es más parsimonioso (menos variables y menor AIC), los modelos **backward y stepwise** logran mejor ajuste (menor deviance residual), incorporando múltiples predictores clínicamente relevantes.
+
+## Predicciones {#sec-predicciones}
+
+Teniendo en cuenta los valores de AIC como método de evaluación inicial consideramos que los modelos conseguidos para **el modelo C** son los mejores para poder realizar predicciones y, por ende, vamos a utilizar ambos.
+
+En primer lugar comenzamos con el modelo:
+
+`RCP ~ ESTADIO_CAT + Nx + GRADO_CAT + FENOTIPO_IHQ_CAT + HT_ADY_OK + Ki67_CAT + TAMAÑO`
+
+::: panel-tabset
+### Paciente 1
+
+```{r, eval=FALSE}
+p1 <- data.frame(
+  ESTADIO_CAT = factor("I", levels = c("I", "II", "III")),
+  Nx = factor("0", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("1/2", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("HER2", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("TAMOXIFENO", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 2.0
+)
+prob1 <- predict(modC_backward, newdata = p1, type = "response")
+
+```
+
+```{r, echo=FALSE}
+# Código real que se ejecuta
+p1 <- data.frame(
+  ESTADIO_CAT = factor("I", levels = c("I", "II", "III")),
+  Nx = factor("0", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("1/2", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("HER2", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("TAMOXIFENO", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 2.0
+)
+prob1 <- predict(modC_backward, newdata = p1, type = "response")
+cat("Paciente 1 - Probabilidad:", round(prob1, 3), "- Predicción:", ifelse(prob1 > 0.5, "SI", "NO"), "- RCP = SI")
+```
+
+### Paciente 2
+
+```{r, eval=FALSE}
+
+p2 <- data.frame(
+  ESTADIO_CAT = factor("II", levels = c("I", "II", "III")),
+  Nx = factor("1", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("3", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("LUMINAL", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("INHIBIDORES DE AROMATASA", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 3.0
+)
+prob2 <- predict(modC_backward, newdata = p2, type = "response")
+```
+
+```{r, echo=FALSE}
+p2 <- data.frame(
+  ESTADIO_CAT = factor("II", levels = c("I", "II", "III")),
+  Nx = factor("1", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("3", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("LUMINAL", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("INHIBIDORES DE AROMATASA", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 3.0
+)
+prob2 <- predict(modC_backward, newdata = p2, type = "response")
+cat("Paciente 2 - Probabilidad:", round(prob2, 3), "- Predicción:", ifelse(prob2 > 0.5, "SI", "NO"), "- RCP = NO")
+```
+
+### Paciente 3
+
+```{r, eval=FALSE}
+
+p3 <- data.frame(
+  ESTADIO_CAT = factor("II", levels = c("I", "II", "III")),
+  Nx = factor("0", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("3", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("HER2", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("NO", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 2.3
+)
+prob3 <- predict(modC_backward, newdata = p3, type = "response")
+```
+
+```{r, echo=FALSE}
+p3 <- data.frame(
+  ESTADIO_CAT = factor("II", levels = c("I", "II", "III")),
+  Nx = factor("0", levels = levels(dataset_recodificado$Nx)),
+  GRADO_CAT = factor("3", levels = c("1/2", "3")),
+  FENOTIPO_IHQ_CAT = factor("HER2", levels = c("LUMINAL", "HER2", "TRIPLE NEGATIVO")),
+  HT_ADY_OK = factor("NO", levels = levels(dataset_recodificado$HT_ADY_OK)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14")),
+  TAMAÑO = 2.3
+)
+prob3 <- predict(modC_backward, newdata = p3, type = "response")
+cat("Paciente 3 - Probabilidad:", round(prob3, 3), "- Predicción:", ifelse(prob3 > 0.5, "SI", "NO"), "- RCP = SI")
+```
+:::
+
+Vamos a evaluar este modelo a través de la **curva ROC** que nos permite medir la capacidad del modelo para discriminar entre pacientes con y sin **RCP.** Por otro lado, con el **gráfico de calibración** evaluamos si las probabilidades predichas por el modelo coinciden con las frecuencias observadas.
+
+```{r, eval=FALSE}
+evaluar_modelo(modC_backward, datos_validacion = dataset_recodificado, variable_respuesta = "RCP")
+```
+
+```{r, echo=FALSE}
+evaluar_modelo(modC_backward, datos_validacion = dataset_recodificado, variable_respuesta = "RCP")
+```
+
+El modelo presenta un buen rendimiento discriminativo, con un AUC de 0.797, lo que indica una capacidad adecuada para distinguir entre pacientes con y sin el evento de interés. La curva ROC se aleja claramente de la diagonal, lo que refuerza esta buena discriminación.\
+
+En cuanto a la calibración, el gráfico muestra que las probabilidades predichas están bastante alineadas con las observadas, aunque hay cierta desviación en los extremos. En general, el modelo tiende a predecir bien las probabilidades reales, lo cual respalda la validez de las predicciones realizadas, incluyendo los ejemplos concretos evaluados.
+
+En segundo lugar utilizaremos el modelo:
+
+`RCP ~ RE + QT_CAT + Ki67_CAT`
+
+::: panel-tabset
+### Paciente 4
+
+```{r, eval=FALSE}
+
+p4 <- data.frame(
+  RE = 75,
+  QT_CAT = factor("NO antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14"))
+)
+prob4 <- predict(modC_forward, newdata = p4, type = "response")
+```
+
+```{r, echo=FALSE}
+p4 <- data.frame(
+  RE = 75,
+  QT_CAT = factor("NO antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14"))
+)
+prob4 <- predict(modC_forward, newdata = p4, type = "response")
+cat("Paciente 4 - Probabilidad:", round(prob4, 3), "- Predicción:", ifelse(prob4 > 0.5, "SI", "NO"), "- RCP = NO")
+```
+
+### Paciente 5
+
+```{r, eval=FALSE}
+
+p5 <- data.frame(
+  RE = 0,
+  QT_CAT = factor("antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14"))
+)
+prob5 <- predict(modC_forward, newdata = p5, type = "response")
+```
+
+```{r,echo=FALSE}
+p5 <- data.frame(
+  RE = 0,
+  QT_CAT = factor("antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor(">14", levels = c("<=14", ">14"))
+)
+prob5 <- predict(modC_forward, newdata = p5, type = "response")
+cat("Paciente 5 - Probabilidad:", round(prob5, 3), "- Predicción:", ifelse(prob5 > 0.5, "SI", "NO"), "- RCP = SI")
+```
+
+### Paciente 6
+
+```{r, eval=FALSE}
+p6 <- data.frame(
+  RE = 99,
+  QT_CAT = factor("NO antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor("<=14", levels = c("<=14", ">14"))
+)
+prob6 <- predict(modC_forward, newdata = p6, type = "response")
+```
+
+```{r, echo=FALSE}
+p6 <- data.frame(
+  RE = 99,
+  QT_CAT = factor("NO antiHER2", levels = levels(dataset_recodificado$QT_CAT)),
+  Ki67_CAT = factor("<=14", levels = c("<=14", ">14"))
+)
+prob6 <- predict(modC_forward, newdata = p6, type = "response")
+cat("Paciente 6 - Probabilidad:", round(prob6, 3), "- Predicción:", ifelse(prob6 > 0.5, "SI", "NO"), "- RCP = NO")
+```
+:::
+
+```{r, eval=FALSE}
+evaluar_modelo(modC_forward, datos_validacion = dataset_recodificado, variable_respuesta = "RCP")
+```
+
+```{r, echo=FALSE}
+evaluar_modelo(modC_forward, datos_validacion = dataset_recodificado, variable_respuesta = "RCP")
+```
+
+Este modelo también presenta un rendimiento razonable, con un AUC de 0.754, aunque ligeramente inferior al del modelo anterior. La capacidad discriminativa sigue siendo aceptable.\
+
+Sin embargo, el gráfico de calibración revela una menor concordancia entre las probabilidades predichas y las observadas, especialmente en los rangos intermedios y altos, donde el modelo tiende a sobreestimar el riesgo. A pesar de ello, las predicciones realizadas en los ejemplos fueron correctas, lo que sugiere que, aunque la calibración global es mejorable, puede ofrecer resultados útiles a nivel individual.
+
+# Análisis de supervivencia
+
+Se llevó a cabo un análisis de supervivencia global (SG) con el objetivo de evaluar el impacto del uso de antibióticos en pacientes con cáncer de mama tratadas con quimioterapia neoadyuvante. El tiempo de seguimiento se calculó como la diferencia en meses entre la fecha de inicio del tratamiento (FECHA_INICIO_QT) y la fecha del último control (FECHA_ULTIMO_CONTROL). El evento de interés se definió como el fallecimiento de la paciente, codificado a partir de la variable ESTADO_ULTIMO_CONTROL (estado_SG = 1 si el estado es "MCE", y 0 en caso contrario). Se estimaron curvas de Kaplan-Meier para evaluar la supervivencia global en el total de pacientes y se compararon las curvas según los subtipos moleculares del tumor (Luminal, HER2+, Triple Negativo), así como según el uso de antibióticos durante el tratamiento. Para evaluar diferencias estadísticas entre grupos se aplicó el test de log-rank. Finalmente, se repitió el análisis de supervivencia estratificado por subtipo molecular, comparando dentro de cada subtipo a las pacientes que recibieron antibióticos frente a las que no, con el fin de explorar si el efecto de los antibióticos sobre la supervivencia varía según el tipo biológico del cáncer.
+
+```{r}
+# Preparar los datos
+datos_preparados <- preparar_datos_supervivencia(dataset_recodificado)
+
+# Ejecutar el análisis
+resultados_sg <- analisis_supervivencia(datos_preparados)
+
+# Mostrar los gráficos
+resultados_sg$global
+```
+
+La probabilidad de supervivencia en la cohorte disminuye de manera progresiva y acentuada, especialmente a partir de los 270 meses de seguimiento, mostrando una tendencia que se aproxima a un descenso exponencial. Sin embargo, entre los 100 y 200 meses, la probabilidad aún se mantiene relativamente alta, oscilando entre 1 y 0.75.
+
+```{r}
+resultados_sg$por_subtipo
+```
+
+En el análisis por subtipos moleculares, las pacientes con tumores **Luminal** experimentan una disminución brusca en la probabilidad de supervivencia alrededor de los 300 meses. En contraste, el subtipo **HER2+** mantiene una probabilidad de supervivencia elevada, con valores que permanecen entre 1 y 0.75 a lo largo del tiempo analizado. Por su parte, el subtipo **Triple Negativo** muestra una caída más pronunciada en la probabilidad a partir de los 100 meses, aunque esta se mantiene por encima de 0.75 hasta aproximadamente los 250 meses, momento en el que desciende hasta 0.5 y alcanza un valor ligeramente superior a 0.25 en torno a los 300 meses.
+
+```{r}
+resultados_sg$por_ab
+```
+
+En cuanto al uso de antibióticos, se observa que las pacientes que **no recibieron antibióticos** mantienen una probabilidad de supervivencia relativamente estable, que no desciende por debajo de 0.6 durante el período de seguimiento. En cambio, aquellas que **sí recibieron antibióticos** presentan una disminución gradual en la probabilidad de supervivencia, que se acentúa cerca de los 300 meses, momento en el cual la probabilidad cae bruscamente hasta alcanzar un valor próximo a 0.
+
+```{r}
+resultados_sg$por_subtipo_y_ab[["LUMINAL"]]
+```
+
+Al analizar específicamente el subtipo **LUMINAL**, se observa que las pacientes que **no recibieron antibióticos** presentan una probabilidad de supervivencia muy similar a la de aquellas que **sí los recibieron**, manteniéndose ambas ligeramente por debajo de 1 a lo largo de los 300 meses de seguimiento.
+
+```{r}
+resultados_sg$por_subtipo_y_ab[["HER2"]]
+```
+
+Al analizar específicamente el subtipo **HER2+**, se observa que las pacientes que **no fueron tratadas con antibióticos** mantienen una probabilidad de supervivencia constante de 1 durante todo el seguimiento. Por otro lado, aquellas que **sí recibieron antibióticos** muestran una probabilidad algo menor, situándose por encima de 0.75 antes de los 200 meses y manteniéndose estable en torno a 0.75 a partir de ese punto.
+
+```{r}
+resultados_sg$por_subtipo_y_ab[["TRIPLE NEGATIVO"]]
+```
+
+Al analizar específicamente el subtipo **TRIPLE** **NEGATIVO**, se observa que las pacientes que **no recibieron antibióticos** presentan una menor probabilidad de supervivencia en comparación con aquellas que **sí los recibieron**. En este último grupo, la probabilidad de supervivencia se mantiene en 1 hasta aproximadamente los 250 meses de seguimiento. Esto podría sugerir un posible efecto beneficioso del uso de antibióticos en pacientes con este subtipo tumoral, contribuyendo a una mayor supervivencia.
+
+# Conclusiones
+
+Los resultados obtenidos en este análisis de supervivencia sugieren que el uso de antibióticos durante el tratamiento con quimioterapia neoadyuvante podría estar asociado a una menor probabilidad de supervivencia en pacientes con cáncer de mama, particularmente en ciertos subtipos biológicos como **HER2+** y **LUMINAL**. Estos hallazgos respaldan la hipótesis de que la alteración de la microbiota —posiblemente inducida por la administración de antibióticos— puede influir negativamente en la eficacia de las terapias oncológicas y, en consecuencia, en la evolución clínica de las pacientes.
+
+En contraste, en el caso del subtipo **TRIPLE NEGATIVO**, se observa una tendencia opuesta: las pacientes que recibieron antibióticos presentan una mayor probabilidad de supervivencia en comparación con aquellas que no los recibieron. Este hallazgo sugiere que, en este subgrupo, el uso de antibióticos podría tener un efecto beneficioso, aunque se requiere un análisis más profundo para confirmar esta asociación y comprender los mecanismos subyacentes.Además, las diferencias observadas entre subtipos moleculares subrayan la necesidad de considerar el perfil biológico del tumor a la hora de valorar el riesgo asociado al uso de antibióticos durante el tratamiento oncológico. Esto sugiere que las decisiones clínicas relacionadas con la prescripción de antimicrobianos deberían realizarse con cautela, y en lo posible bajo un criterio de indicación estrictamente necesario, especialmente en el contexto de la quimioterapia.
+
+Por otro lado, estos resultados también ponen de relieve la importancia de integrar el control de infecciones, la evaluación del estado inmunológico y la vigilancia de la microbiota intestinal como factores relevantes en el manejo integral de las pacientes con cáncer. En un futuro, este enfoque podría abrir la puerta a estrategias de soporte que busquen minimizar el impacto de los antibióticos o restaurar la microbiota, como el uso de probióticos o transplantes fecales, siempre dentro de un marco de evidencia científica robusta.
+
+Finalmente, aunque este análisis no permite establecer relaciones causales definitivas, sí plantea interrogantes clínicamente relevantes que justifican la necesidad de realizar estudios prospectivos que analicen de forma más controlada el impacto de los antibióticos en la supervivencia, considerando la biología del tumor, las comorbilidades y la composición de la microbiota como posibles factores moduladores.
+
+<button id="boton-arriba" title="Volver arriba" onclick="window.scrollTo({top: 0, behavior: &#39;smooth&#39;});">
+
+↑
+
+</button>
+
+```{=html}
+<script>
+  const botonArriba = document.getElementById("boton-arriba");
+  window.addEventListener("scroll", function() {
+    if (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) {
+      botonArriba.style.display = "block";
+    } else {
+      botonArriba.style.display = "none";
+    }
+  });
+</script>
+```

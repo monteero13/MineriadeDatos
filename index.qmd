@@ -1,0 +1,54 @@
+# Introducción
+
+En los últimos años, el tratamiento del cáncer de mama ha evolucionado hacia una medicina más personalizada, ajustando las terapias a las características específicas de cada tumor y paciente. Un hallazgo reciente es la importancia que tiene la microbiota —las bacterias que habitan en nuestro cuerpo, especialmente en el intestino— en procesos relacionados con el cáncer y la forma en que los pacientes responden a las terapias.
+
+Cada vez es más frecuente el uso del tratamiento neoadyuvante, que consiste en administrar quimioterapia antes de la cirugía. Esta estrategia no solo ayuda a reducir el tamaño del tumor, facilitando su extirpación, sino que también permite observar de manera directa la eficacia del tratamiento. El mejor escenario es lograr una “respuesta patológica completa”, es decir, que el tumor desaparezca por completo antes de operar, lo cual se asocia con una mayor supervivencia.
+
+No obstante, durante la quimioterapia, es habitual que muchos pacientes reciban antibióticos para tratar infecciones. Esto puede alterar la microbiota intestinal —un fenómeno conocido como disbiosis— y afectar funciones clave como la regulación del sistema inmunológico. Dado que la microbiota influye tanto en la respuesta al tratamiento como en el entorno del tumor, su desequilibrio podría disminuir la eficacia de la quimioterapia.
+
+Aunque ya se han realizado estudios sobre el efecto de los antibióticos en otros tipos de cáncer, como el de pulmón, riñón o melanoma, aún se sabe poco sobre su impacto en el cáncer de mama. Este estudio tiene como objetivo investigar si el uso de antibióticos influye en la respuesta al tratamiento neoadyuvante en pacientes con cáncer de mama, analizando cómo los cambios en la microbiota pueden afectar los resultados clínicos.
+
+# Hipótesis y objetivos
+
+Se plantea que la administración de antibióticos durante la quimioterapia neoadyuvante, o en el mes previo a su inicio, podría perjudicar el tratamiento en pacientes con cáncer de mama. La razón es que estos fármacos alteran la microbiota —el conjunto de bacterias beneficiosas del cuerpo—, lo que puede interferir con la función del sistema inmunitario, modificar el entorno tumoral y afectar el metabolismo de los fármacos, disminuyendo así la eficacia de la quimioterapia.
+
+El objetivo principal de este estudio es evaluar si las pacientes que reciben antibióticos en ese periodo presentan peores resultados tras la cirugía, medidos mediante la escala RCB (que cuantifica el tumor residual). También se analizará si estas pacientes tienen una menor tasa de supervivencia y un mayor riesgo de recaída.
+
+# Fuentes de datos (población de estudio)
+
+La Unidad de Oncología Médica de Málaga cuenta con una base de datos integrada en el Sistema de Información Galén, donde se almacena una gran cantidad de información clínica, tanto estructurada como no estructurada, sobre los pacientes atendidos en la UGCI de Oncología Médica. Esta base de datos incluye detalles sobre el diagnóstico de cáncer, tratamientos, ensayos clínicos, estudios genéticos, atención de enfermería, hospital de día y consejo genético, entre otros.
+
+Para este estudio, la población de interés estará compuesta por pacientes diagnosticadas con cáncer de mama, registradas en Galén entre los años 2009 y 2023, que hayan recibido tratamiento neoadyuvante seguido de cirugía.
+
+# Sobre el autor
+
+<div>
+
+<p>Hola soy <strong>Alberto Montero</strong> estudiante en Bioinformática y Ciencia de Datos Clínicos. Esto se trata de un proyecto realizado para la asignatura de <strong>Minería de Datos</strong> en la <strong>Universidad de Málaga</strong>.</p>
+
+<p>Puede contactarme a través de cualquiera de mis redes sociales.</p>
+
+::: social-icons
+<a href="https://www.linkedin.com/in/alberto-montero-solera-29a0a32a2"> <img src="img/linkedin.svg" alt="LinkedIn"/> </a> <a href="https://github.com/monteero13"> <img src="img/github.svg" alt="GitHub"/> </a> <a href="https://www.instagram.com/albeertomontero_" > <img src="img/instagram.svg" alt="Instagram"/> </a>
+:::
+
+</div>
+
+<button id="boton-arriba" title="Volver arriba" onclick="window.scrollTo({top: 0, behavior: &#39;smooth&#39;});">
+
+↑
+
+</button>
+
+```{=html}
+<script>
+  const botonArriba = document.getElementById("boton-arriba");
+  window.addEventListener("scroll", function() {
+    if (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) {
+      botonArriba.style.display = "block";
+    } else {
+      botonArriba.style.display = "none";
+    }
+  });
+</script>
+```

@@ -1,0 +1,759 @@
+# Librerias y funciones utilizadas {.tabset .tabset-fade .tabset-pills}
+
+::: {.alert .alert-info}
+| Librería          | Motivo de la adición                                                                                                                                                                             |
+|:------------|:----------------------------------------------------------|
+| knitr             | Crea reportes dinámicos combinando código y resultados                                                                                                                                           |
+| readxl            | Lee archivos Excel                                                                                                                                                                               |
+| skimr             | Proporciona resúmenes rápidos de datasets                                                                                                                                                        |
+| dplyr             | Facilita la manipulación de datos                                                                                                                                                                |
+| DT                | Crea tablas interactivas para explorar datos                                                                                                                                                     |
+| ggplot2           | Genera gráficos avanzados y personalizables                                                                                                                                                      |
+| gridExtra         | Organiza múltiples gráficos en una sola página                                                                                                                                                   |
+| tidyr             | Trata valores perdidos                                                                                                                                                                           |
+| reshape2          | Reorganiza el dataframe                                                                                                                                                                          |
+| stats             | Realiza análisis estadísticos                                                                                                                                                                    |
+| corrplot          | Visualiza la matriz de correlación entre variables numéricas                                                                                                                                     |
+| caret             | Para la creación y evaluación de modelos de aprendizaje automático en R.                                                                                                                         |
+| pROC              | Proporciona herramientas para la evaluación y visualización de modelos de clasificación mediante la curva ROC y el cálculo del área bajo la curva (AUC).                                         |
+| kableExtra        | Mejora y embellece las tablas generadas con kable() del paquete knitr.                                                                                                                           |
+| survival          | Realizar análisis de supervivencia, como el cálculo de curvas de Kaplan-Meier, la estimación de modelos de riesgos proporcionales de Cox, entre otros.                                           |
+| survminer         | Mejora la visualización de los resultados obtenidos con el paquete survival.                                                                                                                     |
+| lubridate         | Facilita la manipulación y el análisis de fechas y horas.                                                                                                                                        |
+| purrr             | Itera de forma elegante y funcional sobre listas o vectores en R, evitando bucles for.                                                                                                           |
+| plotly            | Crea gráficos interactivos en R.                                                                                                                                                                 |
+| MASS              | Proporciona funciones y métodos estadísticos avanzados, incluyendo herramientas para regresión, análisis discriminante y selección de modelos.                                                   |
+| ResourceSelection | Se usa principalmente para la prueba de Hosmer-Lemeshow, que evalúa la bondad de ajuste de modelos de regresión logística, comparando las probabilidades predichas con las observadas en grupos. |
+| ROSE              | Balancea conjuntos de datos desbalanceados.                                                                                                                                                      |
+| htmltools         | Inserta saltos de línea al renderizar un archivo HTML.                                                                                                                                           |
+| nnet              | Crea redes neuronales simples.                                                                                                                                                                   |
+| e1071             | Contiene herramientas para máquinas de vectores de soporte (SVM)                                                                                                                                 |
+| rpart             | Crea árboles de decisión.                                                                                                                                                                        |
+| shiny             | Crea aplicaciones web interactivas con R.                                                                                                                                                        |
+| shinyjs           | Añade funciones de JavaScript fácilmente en Shiny.                                                                                                                                               |
+| shinyWidgets      | Agrega controles más bonitos y avanzados a tu app Shiny.                                                                                                                                         |
+| bslib             | Sirve para personalizar el diseño y tema (colores, tipografía) de tu app Shiny.                                                                                                                  |
+:::
+
+A continuación podrá ver todas y cada unas de las funciones utilizadas para el estudio que se ha llevado a cabo.
+
+::: panel-tabset
+## Analizar tipo de variable
+
+```{r}
+analizar_variables <- function(data, variables_interes) {
+  
+  # Crear listas vacías para almacenar variables según condición
+  vars_numericas <- list()
+  vars_categoricas <- list()
+  
+  # Iterar sobre cada variable en la lista de interés
+  for (variable in variables_interes) {
+    
+    # Verificar si la variable existe en el dataset
+    if (!(variable %in% colnames(data))) {
+      message(paste("⚠️ Advertencia: La variable", variable, "no está en el dataset."))
+      next  # Pasar a la siguiente variable
+    }
+    
+    # Si la variable es numérica, agregarla a la lista de numéricas
+    if (is.numeric(data[[variable]])) {
+      vars_numericas[[variable]] <- data[[variable]]
+    }
+    
+    # Si la variable es categórica (factor o character), agregarla a la lista de categóricas
+    if (is.character(data[[variable]]) || is.factor(data[[variable]])) {
+      vars_categoricas[[variable]] <- as.factor(data[[variable]])  # Convertir a factor si es character
+    }
+  }
+  
+  # Devolver ambas listas en un solo objeto
+  return(list(Numericas = vars_numericas, Categoricas = vars_categoricas))
+}
+```
+
+## Análisis estadístico general de variables numéricas
+
+```{r}
+# Función para analizar múltiples variables en un dataset
+analizar_variables_df <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # Iterar sobre cada variable
+  for (variable in variables_existentes) {
+    
+      # Extraer estadísticas
+      resumen <- summary(data[[variable]], na.rm = TRUE)
+      
+      # Crear DataFrame con estadísticas
+      df_resumen <- data.frame(
+        Variable = variable,
+        Min = as.numeric(resumen[1]),  
+        Q1 = as.numeric(resumen[2]),
+        Mediana = as.numeric(resumen[3]),
+        Media = mean(data[[variable]], na.rm = TRUE),
+        Q3 = as.numeric(resumen[5]),
+        Max = as.numeric(resumen[6]),
+        Varianza = var(data[[variable]], na.rm = TRUE),
+        Desviacion = sd(data[[variable]], na.rm = TRUE)
+      )
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  return(resultados_final)  # Devolver DataFrame final
+}
+```
+
+## Análisis estadístico general de variables categóricas {#Generalcategorico}
+
+```{r}
+# Función para analizar variables categóricas en un dataset y devolver un datatable interactivo
+analizar_variables_categoricas <- function(data, variables) {
+  
+  # Verificar que las variables existan en el dataset
+  variables_existentes <- variables[variables %in% colnames(data)]
+  
+  if (length(variables_existentes) == 0) {
+    stop("Ninguna de las variables especificadas está en el dataset.")
+  }
+  
+  # Lista para almacenar los resultados
+  resultados_list <- list()
+  
+  # Iterar sobre cada variable categórica
+  for (variable in variables_existentes) {
+    
+    if (is.factor(data[[variable]]) | is.character(data[[variable]])) {
+      # 📊 Si es variable categórica (factor o carácter)
+      
+      # Frecuencia absoluta de las categorías
+      freq_abs <- table(data[[variable]], useNA = "ifany")
+      
+      # Frecuencia relativa
+      freq_rel <- prop.table(freq_abs) * 100
+      
+      # Moda (categoría más frecuente)
+      moda <- names(freq_abs)[which.max(freq_abs)]
+      
+      # Número de categorías distintas
+      n_categorias <- length(freq_abs)
+      
+      # Crear DataFrame con estadísticas categóricas
+      df_resumen <- data.frame(
+        Variable = variable,
+        `Número de Categorías` = n_categorias,
+        `Moda` = moda,
+        `Frecuencia Absoluta` = paste(names(freq_abs), ":", freq_abs, collapse = ", "),
+        `Frecuencia Relativa (%)` = paste(names(freq_rel), ":", round(freq_rel, 2), collapse = ", ")
+      )
+    } else {
+      next  # Si la variable no es categórica, se omite
+    }
+    
+    # Agregar resultados a la lista
+    resultados_list[[variable]] <- df_resumen
+  }
+  
+  # Unir todos los resultados en un único dataframe
+  resultados_final <- bind_rows(resultados_list)
+  
+  # Devolver el resultado como un datatable interactivo
+  library(DT)
+  return(datatable(resultados_final, options = list(pageLength = 3)))
+}
+```
+
+## Resultados visuales de cualquier variable {#Resultadosvisuales}
+
+```{r}
+visualizar_variable <- function(data, variable) {
+  var_data <- data[[variable]]
+  
+  if (is.numeric(var_data)) {
+    
+    # Histograma
+    fig1 <- plot_ly(
+      x = var_data, type = 'histogram',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 2)
+      ),
+      autobinx = FALSE,
+      xbins = list(
+        start = floor(min(var_data, na.rm = TRUE)),
+        end = ceiling(max(var_data, na.rm = TRUE)),
+        size = 1
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Valor"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    # Boxplot
+    fig2 <- plot_ly(
+      y = var_data, type = 'box',
+      fillcolor = '#00AEDA',
+      line = list(color = '#002859')
+    ) %>%
+      layout(
+        yaxis = list(title = "Valor")
+      )
+    
+    # Mostrar uno debajo del otro
+    subplot(fig1, fig2, nrows = 2, margin = 0.1, titleX = TRUE, titleY = TRUE)
+    
+  } else {
+    # Si es categórica
+    freq_table <- table(var_data)
+    x <- names(freq_table)
+    y <- as.numeric(freq_table)
+    text <- as.character(y)
+    
+    data_plot <- data.frame(x, y, text)
+    
+    fig <- plot_ly(
+      data_plot,
+      x = ~x, y = ~y, type = 'bar',
+      text = ~text, textposition = 'auto',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 1.5)
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Categoría"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    fig
+  }
+}
+```
+
+## Detectar valores perdidos, imputarlos y detectar valores atípicos {#Imputacion}
+
+```{r}
+procesar_datos <- function(data, variables_interes) {
+  # Eliminar valores NA
+  data <- na.omit(data)
+
+  # Eliminar filas con "Desconocido" en cualquier variable
+  data <- data %>% filter(if_all(everything(), ~ . != "Desconocido"))
+
+  # Eliminar valores específicos no válidos
+  if ("EDAD_DIAGNOSTICO" %in% colnames(data)) {
+    data <- data %>% filter(EDAD_DIAGNOSTICO != 999)
+  }
+  if ("Nx" %in% colnames(data)) {
+    data <- data %>% filter(Nx != 999)
+  }
+  if ("TAMAÑO" %in% colnames(data)) {
+    data <- data %>% filter(TAMAÑO != 999)
+  }
+
+  # Imputación de valores perdidos
+  for (var in variables_interes) {
+    if (var %in% colnames(data)) {
+      if (is.numeric(data[[var]])) {
+        data[[var]][is.na(data[[var]])] <- mean(data[[var]], na.rm = TRUE)
+      } else if (is.factor(data[[var]]) || is.character(data[[var]])) {
+        moda <- names(which.max(table(data[[var]])))
+        data[[var]][is.na(data[[var]])] <- moda
+      }
+    }
+  }
+
+  # Detección y eliminación de valores atípicos
+  for (var in variables_interes) {
+    if (var %in% colnames(data) && is.numeric(data[[var]])) {
+      Q1 <- quantile(data[[var]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data[[var]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      limite_inferior <- Q1 - 1.5 * IQR
+      limite_superior <- Q3 + 1.5 * IQR
+      data <- data %>% filter(data[[var]] >= limite_inferior & data[[var]] <= limite_superior)
+    }
+  }
+  library(dplyr)
+  # Seleccionar solo las variables de interés
+  data <- dplyr::select(data, dplyr::all_of(variables_interes))
+
+
+  # Eliminar niveles no utilizados en factores
+  data <- droplevels(data)
+
+  return(data)
+}
+```
+
+## Categorizar y recodificar las variables para estratificar adecuadamente {#Categorizacion}
+
+```{r}
+# Función para preprocesar el dataset
+preprocesar_datos <- function(data) {
+  
+  # Verificar si las columnas existen antes de modificarlas
+  if ("GRADO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(GRADO_CAT = case_when(
+        GRADO %in% c(1, 2) ~ "1/2",
+        GRADO == 3 ~ "3",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(GRADO_CAT = as.factor(GRADO_CAT))
+  }
+  
+  if ("HISTOLOGIA" %in% colnames(data)) {
+    data <- data %>%
+      mutate(HISTOLOGIA_CAT = case_when(
+        HISTOLOGIA == "DUCTAL" ~ "DUCTAL",
+        TRUE ~ "NO DUCTAL"
+      )) %>%
+      mutate(HISTOLOGIA_CAT = as.factor(HISTOLOGIA_CAT))
+  }
+  
+  if ("Ki67" %in% colnames(data)) {
+    data <- data %>%
+      mutate(Ki67_CAT = case_when(
+        Ki67 <= 14 ~ "<=14",
+        Ki67 > 14 ~ ">14",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(Ki67_CAT = as.factor(Ki67_CAT))
+  }
+  
+  if ("FENOTIPO_IHQ" %in% colnames(data)) {
+    data <- data %>%
+      mutate(FENOTIPO_IHQ_CAT = case_when(
+        FENOTIPO_IHQ %in% c("LUMINAL A", "LUMINAL B") ~ "LUMINAL",
+        FENOTIPO_IHQ %in% c("LUMINAL-HER2", "HER2") ~ "HER2",
+        TRUE ~ "TRIPLE NEGATIVO"
+      )) %>%
+      mutate(FENOTIPO_IHQ_CAT = as.factor(FENOTIPO_IHQ_CAT))
+  }
+  
+  if ("ESTADIO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(ESTADIO_CAT = case_when(
+        ESTADIO %in% c("I", "IA", "IB") ~ "I",
+        ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+        ESTADIO %in% c("III", "IIIA", "IIIB", "IIIC") ~ "III",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(ESTADIO_CAT = as.factor(ESTADIO_CAT))
+  }
+  
+  if ("TIPO_QT_NEOADY_OK" %in% colnames(data)) {
+    data <- data %>%
+      mutate(QT_CAT = case_when(
+        TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE") ~ "antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA", "QUIMIOTERAPIA-INMUNOTERAPIA") ~ "INMUNO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(QT_CAT = as.factor(QT_CAT))
+  }
+  
+  if ("No_ANTIBIOTICOS" %in% colnames(data)) {
+    data <- data %>%
+      mutate(No_ANTIBIOTICOS_CAT = case_when(
+        No_ANTIBIOTICOS == 1 ~ "Una vez",
+        No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(No_ANTIBIOTICOS_CAT = as.factor(No_ANTIBIOTICOS_CAT))
+  }
+  
+  if ("RCB" %in% colnames(data)) {
+    data <- data %>%
+      mutate(RCP = case_when(
+        RCB %in% c("RCB-0", "RCB-I") ~ "SI",
+        RCB %in% c("RCB-II", "RCB-III") ~ "NO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(RCP = as.factor(RCP))
+  }
+  
+  return(data)
+}
+```
+
+## Analizar asociación/correlación entre variable evento y otra {#Asociacion}
+
+```{r}
+detectar_asociacion <- function(data, evento, variable) {
+  resultados <- character()
+  grafico <- NULL
+  
+  resultados <- c(resultados, paste("Analizando relación entre", evento, "y", variable))
+
+  data <- data %>% mutate(across(all_of(evento), as.factor))
+
+  if (is.numeric(data[[variable]])) {
+    resultados <- c(resultados, "(Variable numérica)")
+    
+    normalidad <- shapiro.test(data[[variable]])
+    es_normal <- normalidad$p.value > 0.05
+    resultados <- c(resultados, paste("Shapiro-Wilk p-value:", round(normalidad$p.value, 4)))
+    
+    if (length(levels(data[[evento]])) == 2 && es_normal) {
+      t_test <- t.test(data[[variable]] ~ data[[evento]])
+      resultados <- c(resultados, paste("Test t de Student p-value:", round(t_test$p.value, 4)))
+      conclusion <- ifelse(t_test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                    "No existe asociación estadística entre las variables.")
+    } else {
+      metodo <- ifelse(es_normal, "pearson", "spearman")
+      test <- cor.test(data[[variable]], as.numeric(as.factor(data[[evento]])), method = metodo)
+      resultados <- c(resultados, paste("Correlación", metodo, "p-value:", round(test$p.value, 4)))
+      conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                  "No existe asociación estadística entre las variables.")
+    }
+    
+    resultados <- c(resultados, conclusion)
+    
+    grafico <- plot_ly(data, x = ~.data[[evento]], y = ~.data[[variable]], type = "box",
+                       boxpoints = "all", jitter = 0.3,
+                       marker = list(color = "#00AEDA"),
+                       line = list(color = "#002859")) %>%
+               layout(title = paste("Distribución de", variable, "por", evento),
+                      xaxis = list(title = evento),
+                      yaxis = list(title = variable))
+
+  } else if (is.factor(data[[variable]]) || is.character(data[[variable]])) {
+    resultados <- c(resultados, "(Variable categórica)")
+    
+    data <- data %>%
+      mutate(across(c(all_of(evento), all_of(variable)), as.factor))
+    
+    tabla <- table(data[[evento]], data[[variable]])
+    
+    if (any(tabla < 5)) {
+      test <- fisher.test(tabla, simulate.p.value = TRUE)
+      resultados <- c(resultados, paste("Test de Fisher p-value:", round(test$p.value, 4)))
+    } else {
+      test <- chisq.test(tabla)
+      resultados <- c(resultados, paste("Test Chi-cuadrado p-value:", round(test$p.value, 4)))
+    }
+    
+    conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                              "No existe asociación estadística entre las variables.")
+    resultados <- c(resultados, conclusion)
+
+    df_tabla <- as.data.frame(tabla)
+    names(df_tabla) <- c("Evento", "Variable", "Frecuencia")
+    
+    grafico <- plot_ly(
+      data = df_tabla,
+      x = ~Variable,
+      y = ~Evento,
+      z = ~Frecuencia,
+      type = "heatmap",
+      colors = c("#ffffff", "#00AEDA"),
+      showscale = TRUE
+    ) %>%
+    layout(title = paste("Mapa de calor entre", evento, "y", variable),
+           xaxis = list(title = variable),
+           yaxis = list(title = evento))
+  }
+
+  list(texto = resultados, grafico = grafico)
+}
+```
+
+## Evaluar modelo logístico
+
+```{r}
+evaluar_modelo <- function(modelo, datos_validacion, variable_respuesta) {
+  library(pROC)
+  library(ggplot2)
+  library(ResourceSelection)  # Para la prueba de Hosmer-Lemeshow (opcional)
+
+  # Obtener las variables que necesita el modelo
+  vars_modelo <- all.vars(formula(modelo))[-1]
+
+  # Asegurar que los niveles de factores coincidan
+  datos_validacion_filtrados <- datos_validacion[, c(variable_respuesta, vars_modelo)]
+
+  for (var in vars_modelo) {
+    if (is.factor(model.frame(modelo)[[var]])) {
+      datos_validacion_filtrados[[var]] <- factor(
+        datos_validacion_filtrados[[var]],
+        levels = levels(model.frame(modelo)[[var]])
+      )
+    }
+  }
+
+  # Predicciones
+  probs <- predict(modelo, newdata = datos_validacion_filtrados, type = "response")
+  obs <- datos_validacion_filtrados[[variable_respuesta]]
+
+  # CURVA ROC
+  roc_obj <- roc(obs, probs)
+  plot(roc_obj, main = paste("Curva ROC - AUC:", round(auc(roc_obj), 3)), col = "#00AEDA", lwd = 2)
+
+  # CALIBRACIÓN
+  df_cal <- data.frame(obs = as.numeric(obs == "SI"), pred = probs)
+  df_cal$pred_bin <- cut(df_cal$pred, breaks = seq(0, 1, by = 0.1), include.lowest = TRUE)
+  cal_plot <- aggregate(obs ~ pred_bin, data = df_cal, mean)
+  cal_plot$pred_mean <- aggregate(pred ~ pred_bin, data = df_cal, mean)$pred
+
+  ggplot(cal_plot, aes(x = pred_mean, y = obs)) +
+    geom_line(color = "#00AEDA", linewidth = 1.5) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#002859") +
+    labs(
+         x = "Probabilidad predicha",
+         y = "Proporción observada") +
+    theme_minimal()
+}
+```
+
+## Presentar matriz de confusión
+
+```{r}
+
+confusion_matrix_plot <- function(modelo, data, evento, threshold = 0.5) {
+  library(ggplot2)
+  library(dplyr)
+  # Predecir probabilidades y clasificar según umbral
+  prob_pred <- predict(modelo, newdata = data, type = "response")
+  pred_clase <- ifelse(prob_pred >= threshold, 1, 0)
+  
+  # Variable real (convertir si es necesario)
+  real <- data[[evento]]
+  if (!all(real %in% c(0, 1))) {
+    real <- as.numeric(as.factor(real)) - 1
+  }
+  
+  # Crear data frame con real y predicho
+  df_cm <- data.frame(Real = factor(real, levels = c(1, 0)),
+                      Predicho = factor(pred_clase, levels = c(1, 0)))
+  
+  # Contar combinaciones
+  cm_table <- df_cm %>%
+    count(Real, Predicho)
+  
+  # Graficar con ggplot2
+  ggplot(cm_table, aes(x = Real, y = Predicho)) +
+    geom_tile(aes(fill = n), color = "#002859", linewidth = 1) +
+    geom_text(aes(label = n), color = "white", size = 6) +
+    scale_fill_gradient(low = "#00AEDA", high = "#00AEDA") +
+    labs(title = "Matriz de Confusión",
+         x = "Valor Real", y = "Valor Predicho") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.title = element_text(face = "bold"))
+}
+```
+
+## Preparar los datos para supervivencia {#Preparar}
+
+```{r}
+preparar_datos_supervivencia <- function(data) {
+  data %>%
+    mutate(
+      FECHA_INICIO_QT = as.Date(FECHA_INICIO_QT),
+      FECHA_ULTIMO_CONTROL = as.Date(FECHA_ULTIMO_CONTROL),
+      tiempo_sg = as.numeric(difftime(FECHA_ULTIMO_CONTROL, FECHA_INICIO_QT, units = "days")) / 30.44, # en meses
+      estado_SG = ifelse(data[["ESTADO_ULTIMO_CONTROL"]] == "MCE", 1, 0),
+      ab = factor(ANTIBIOTICO),
+      subtipo = factor(FENOTIPO_IHQ_CAT)
+    ) %>%
+    filter(!is.na(tiempo_sg) & tiempo_sg >= 0)
+}
+```
+
+## Realizar el análisis de supervivencia {#Supervivencia}
+
+```{r}
+analisis_supervivencia <- function(data) {
+  necesarias <- c("tiempo_sg", "estado_SG", "ab", "subtipo")
+  faltantes <- necesarias[!necesarias %in% names(data)]
+  if (length(faltantes) > 0) stop(paste("Faltan variables necesarias:", paste(faltantes, collapse = ", ")))
+
+  data <- data %>% drop_na(tiempo_sg, estado_SG, ab, subtipo)
+
+  # Supervivencia global
+  km_total <- survfit(Surv(tiempo_sg, estado_SG) ~ 1, data = data)
+  g1 <- ggsurvplot(km_total, data = data, title = "Supervivencia Global", xlab = "Meses", ylab = "Prob. de supervivencia")
+
+  # Subtipos moleculares
+  km_subtipo <- survfit(Surv(tiempo_sg, estado_SG) ~ subtipo, data = data)
+  g2 <- ggsurvplot(km_subtipo, data = data, pval = TRUE, legend.title = "Subtipo", title = "SG por subtipo tumoral")
+
+  # Uso de antibióticos
+  km_ab <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = data)
+  g3 <- ggsurvplot(km_ab, data = data, pval = TRUE, legend.title = "Antibióticos", title = "SG por uso de antibióticos")
+
+  # Por subtipo y antibióticos
+  g4_list <- list()
+  for (tipo in levels(data$subtipo)) {
+    subdata <- data %>% filter(subtipo == tipo)
+    if (nrow(subdata) >= 10 && length(unique(subdata$ab)) > 1) {
+      fit_sub <- survfit(Surv(tiempo_sg, estado_SG) ~ ab, data = subdata)
+      g4_list[[tipo]] <- ggsurvplot(fit_sub, data = subdata, pval = TRUE,
+                                    title = paste("SG por AB en subtipo:", tipo),
+                                    legend.title = "Antibióticos")
+    }
+  }
+
+  return(list(
+    global = g1,
+    por_subtipo = g2,
+    por_ab = g3,
+    por_subtipo_y_ab = g4_list
+  ))
+}
+```
+
+## Repeated Hold Out
+
+```{r}
+evaluar_modelo_holdout <- function(data, modelo_inicial, 
+                                   n_iteraciones, 
+                                   prop_entrenamiento, 
+                                   umbral = 0.5, 
+                                   mostrar_roc = TRUE, 
+                                   mostrar_tabla = TRUE) {
+  library(caret)
+  library(pROC)
+  library(plotly)
+  library(kableExtra)
+  
+  niveles <- levels(data$RCP)
+  
+  # Vectores para guardar métricas
+  accs_entrenamiento <- c()
+  accs_test <- c()
+  sensibilidades <- c()
+  especificidades <- c()
+  f1s <- c()
+  aucs <- c()
+  
+  confusion_final <- NULL
+  auc_final <- NULL
+  
+  for (i in 1:n_iteraciones) {
+    set.seed(100 + i)
+    idx <- createDataPartition(data$RCP, p = prop_entrenamiento, list = FALSE)
+    train <- data[idx, ]
+    test <- data[-idx, ]
+    
+    modelo <- update(modelo_inicial, data = train)
+    
+    # Entrenamiento
+    pred_ent <- predict(modelo, train, type = "response")
+    pred_ent_class <- factor(ifelse(pred_ent >= umbral, "SI", "NO"), levels = niveles)
+    real_ent <- factor(train$RCP, levels = niveles)
+    cm_ent <- confusionMatrix(pred_ent_class, real_ent)
+    accs_entrenamiento[i] <- cm_ent$overall["Accuracy"]
+    
+    # Test
+    pred_test <- predict(modelo, test, type = "response")
+    pred_test_class <- factor(ifelse(pred_test >= umbral, "SI", "NO"), levels = niveles)
+    real_test <- factor(test$RCP, levels = niveles)
+    cm_test <- confusionMatrix(pred_test_class, real_test)
+    
+    accs_test[i] <- cm_test$overall["Accuracy"]
+    sensibilidades[i] <- cm_test$byClass["Sensitivity"]
+    especificidades[i] <- cm_test$byClass["Specificity"]
+    f1s[i] <- cm_test$byClass["F1"]
+    
+    roc_obj <- roc(real_test, pred_test, quiet = TRUE)
+    aucs[i] <- roc_obj$auc
+    
+    if (i == n_iteraciones) {
+      confusion_final <- cm_test
+      auc_final <- roc_obj
+    }
+  }
+  
+  resultados <- data.frame(
+    iteracion = 1:n_iteraciones,
+    acc_entrenamiento = accs_entrenamiento,
+    acc_test = accs_test,
+    sensibilidad = sensibilidades,
+    especificidad = especificidades,
+    f1 = f1s,
+    auc = aucs
+  )
+  
+  # --- Gráficos personalizados ---
+  color_linea <- "#002859"
+  color_relleno <- "#00AEDA"
+  
+  acc_plot <- plot_ly(resultados, x = ~iteracion, y = ~acc_entrenamiento, name = "Entrenamiento",
+                      type = "scatter", mode = "lines",
+                      line = list(color = color_linea, width = 2),
+                      fill = "tozeroy", fillcolor = color_relleno) %>%
+    add_trace(y = ~acc_test, name = "Test", mode = "lines",
+              line = list(color = "#888888", width = 2)) %>%
+    layout(title = "Precisión (ACC)", xaxis = list(title = "Iteración"), yaxis = list(title = "ACC"))
+
+  metricas_plot <- plot_ly(resultados, x = ~iteracion, y = ~sensibilidad, name = "Sensibilidad",
+                           type = "scatter", mode = "lines",
+                           line = list(color = color_relleno, width = 2)) %>%
+    add_trace(y = ~especificidad, name = "Especificidad", mode = "lines",
+              line = list(color = color_linea, width = 2)) %>%
+    add_trace(y = ~f1, name = "F1-score", mode = "lines",
+              line = list(color = "#AAAAAA", width = 2)) %>%
+    layout(title = "Métricas en Test", xaxis = list(title = "Iteración"), yaxis = list(title = "Valor"))
+
+  auc_plot <- plot_ly(resultados, x = ~iteracion, y = ~auc, name = "AUC",
+                      type = "scatter", mode = "lines",
+                      line = list(color = color_relleno, width = 2)) %>%
+    layout(title = "AUC", xaxis = list(title = "Iteración"), yaxis = list(title = "AUC"))
+
+  # --- Mostrar tabla si se solicita ---
+  tabla <- NULL
+  if (mostrar_tabla) {
+    metricas_promedio <- colMeans(resultados[, -1])
+    tabla_df <- data.frame(
+      Métrica = names(metricas_promedio),
+      Promedio = round(metricas_promedio, 4)
+    )
+    tabla <- kable(tabla_df,
+                   format = "html",
+                   caption = "Métricas Promedio del Repeated Holdout",
+                   col.names = c("Métrica", "Promedio")) %>%
+      kable_styling(bootstrap_options = c("striped", "hover"),
+                    full_width = FALSE, position = "center") %>%
+      row_spec(0, bold = TRUE, color = "white", background = color_linea) %>%
+      column_spec(1, color = "black") %>%
+      column_spec(2, background = "#E8F9FD", color = "black")
+  }
+
+  # --- Mostrar curva ROC si se solicita ---
+  if (mostrar_roc && !is.null(auc_final)) {
+    plot(auc_final, print.auc = TRUE, main = "Curva ROC Final")
+  }
+
+  return(list(
+    resultados = resultados,
+    tabla = tabla,
+    plots = list(acc = acc_plot, metricas = metricas_plot, auc = auc_plot),
+    confusion = confusion_final,
+    auc_final = auc_final
+  ))
+}
+```
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+También cabe destacar el uso de la Inteligencia Artificial como herramienta de apoyo en el proceso de aprendizaje y mejora del diseño visual del documento. En particular, ha resultado especialmente útil para optimizar elementos en formato HTML, dada la limitada experiencia previa en este ámbito. También ha servido de gran ayuda para el desarrollo de la aplicación en RShiny. Gracias a ello, se ha logrado una presentación más clara, profesional y accesible del contenido.
+:::

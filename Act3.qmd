@@ -1,0 +1,28 @@
+# Aplicación Interactiva: Predicción de Respuesta Completa Patológica (RCP)
+
+A continuación se presenta una aplicación interactiva desarrollada en Shiny que permite predecir la Respuesta Completa Patológica (RCP) en pacientes con cáncer de mama, a partir de variables clínicas seleccionadas. Esta herramienta se basa en el modelo de regresión logística, optimizado por búsqueda exhaustiva y validado mediante validación cruzada, lo que garantiza un equilibrio entre rendimiento, interpretabilidad y aplicabilidad clínica.
+
+La aplicación está diseñada para facilitar su uso por parte de profesionales de la salud, permitiendo introducir valores clínicos específicos y obtener una estimación de la probabilidad de RCP.
+
+# Acceso a la Aplicación
+
+<iframe src="https://lfxuag-alberto-montero0solera.shinyapps.io/act2/" width="100%" height="800" style="border:none; overflow:hidden;" scrolling="no" frameborder="0">
+
+</iframe>
+
+## Guía de uso
+
+1.  **Introducir los datos clínicos del paciente**\
+    Completa el formulario con la información requerida, como edad, tipo tumoral, biomarcadores, etc. Estas variables han sido seleccionadas previamente por el modelo como las más relevantes para la predicción.
+
+2.  **Lanzar la predicción**\
+    Haz clic en el botón de predicción para que el modelo calcule la probabilidad de que el paciente alcance una Respuesta Completa Patológica (RCP) tras el tratamiento.
+
+3.  **Interpretar el resultado**\
+    El modelo devolverá una probabilidad (entre 0 y 1). Cuanto más cercano a 1, mayor es la probabilidad de que el paciente obtenga una RCP. Esta información puede complementar la evaluación clínica.
+
+4.  **Reiniciar o modificar los datos**\
+    Puedes ajustar los valores introducidos y volver a ejecutar la predicción para explorar diferentes escenarios clínicos.
+
+5.  **Importante**\
+    Esta herramienta es únicamente de apoyo y **no sustituye bajo ningún concepto el juicio clínico profesional**. Los resultados deben interpretarse siempre en conjunto con otros factores médicos, y su uso está orientado a complementar, no reemplazar, la toma de decisiones médicas por parte de personal sanitario cualificado.

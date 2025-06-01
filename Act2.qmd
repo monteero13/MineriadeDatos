@@ -1,0 +1,2624 @@
+# Diseño de modelos predictivos - Actividad 2
+
+En esta segunda actividad, *Modelado predictivo*, se desarrollarán modelos para predecir la respuesta completa patológica (RCP) utilizando distintos algoritmos de aprendizaje computacional comúnmente empleados en la literatura.
+
+En primer lugar, se construirá un modelo de regresión logística a partir de las variables más representativas obtenidas en la actividad 1. Posteriormente, se implementará el procedimiento de validación *Repeated Holdout*, parametrizando el número de repeticiones (*n*) y la proporción de división entre datos de entrenamiento y test, con el fin de estimar la capacidad de generalización del modelo. Se analizarán los resultados mediante representaciones gráficas (histogramas, boxplots), evaluando el rendimiento promedio, la variabilidad y la sensibilidad al método de validación.
+
+A continuación, se aplicará un algoritmo de búsqueda exhaustiva para identificar la mejor combinación de variables, considerando un esquema de validación honesta. Se utilizarán distintas métricas de evaluación —como la exactitud (ACC), precisión, recall, F1-score y AUC— según las características del conjunto de datos.
+
+Además, se compararán los resultados obtenidos con otros algoritmos de aprendizaje automático incluidos en la guía docente, específicamente redes neuronales (RRNN), máquinas de vectores soporte (SVM) y árboles de decisión (DT). Para la selección de variables, se utilizarán enfoques de tipo *filtrado* y *wrapper*, siendo estos últimos independientes del algoritmo de aprendizaje utilizado. Se deberá implementar al menos un algoritmo wrapper (por ejemplo, búsqueda exhaustiva, *forward selection* u otro) que utilice el AUC como criterio para seleccionar el mejor modelo.
+
+Por último, se aplicará el método de doble validación cruzada (5x2CV), como vimos en clase, para validar de forma honesta tanto la selección de hiperparámetros como las variables relevantes de cada modelo. El modelo más eficiente será desplegado en producción mediante una aplicación desarrollada en RShiny.
+
+# Diseño de modelo predictivo con Regresión Logística
+
+```{r setup, include=FALSE}
+# Definir el mirror de CRAN para evitar errores en install.packages()
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+paquetes <- c("knitr", "readxl", "skimr", "dplyr", "DT", "ggplot2",  
+              "gridExtra", "tidyr", "reshape2", "stats", "corrplot", 
+              "caret", "pROC", "kableExtra", "survival", "survminer", 
+              "lubridate", "purrr", "plotly", "MASS", "ResourceSelection", "ROSE", "htmltools", "nnet", "e1071", "rpart")
+
+for (paquete in paquetes) {
+  if (!requireNamespace(paquete, quietly = TRUE)) {
+    install.packages(paquete)
+  }
+}
+
+lapply(paquetes, library, character.only = TRUE)
+
+opts_chunk$set(echo = TRUE, collapse = TRUE)
+
+# Identificación del ordenador donde se ejecuta
+my_computer <- Sys.info()[c(4, 1, 5, 7)]
+```
+
+```{r funciones, echo=FALSE}
+
+procesar_datos <- function(data, variables_interes) {
+  library(dplyr)
+
+  # Eliminar valores específicos no válidos
+  if ("EDAD_DIAGNOSTICO" %in% colnames(data)) {
+    data <- data %>% filter(EDAD_DIAGNOSTICO != 999)
+  }
+  if ("Nx" %in% colnames(data)) {
+    data <- data %>% filter(Nx != 999)
+  }
+  if ("TAMAÑO" %in% colnames(data)) {
+    data <- data %>% filter(TAMAÑO != 999)
+  }
+
+  # Imputación de valores perdidos y "Desconocido"
+  for (var in variables_interes) {
+    if (var %in% colnames(data)) {
+      if (is.numeric(data[[var]])) {
+        # Imputar NA numéricos con la media
+        data[[var]][is.na(data[[var]])] <- mean(data[[var]], na.rm = TRUE)
+      } else if (is.factor(data[[var]]) || is.character(data[[var]])) {
+        # Reemplazar "Desconocido" con NA
+        data[[var]][data[[var]] == "Desconocido"] <- NA
+
+        # Calcular la moda e imputar
+        moda <- names(which.max(table(data[[var]])))
+        data[[var]][is.na(data[[var]])] <- moda
+      }
+    }
+  }
+
+  # Detección y eliminación de valores atípicos (solo en numéricos)
+  for (var in variables_interes) {
+    if (var %in% colnames(data) && is.numeric(data[[var]])) {
+      Q1 <- quantile(data[[var]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data[[var]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      limite_inferior <- Q1 - 1.5 * IQR
+      limite_superior <- Q3 + 1.5 * IQR
+      data <- data %>% filter(data[[var]] >= limite_inferior & data[[var]] <= limite_superior)
+    }
+  }
+
+  # Seleccionar solo las variables de interés
+  data <- dplyr::select(data, dplyr::all_of(variables_interes))
+
+  # Eliminar niveles no utilizados en factores
+  data <- droplevels(data)
+
+  return(data)
+}
+
+# Función para preprocesar el dataset
+preprocesar_datos <- function(data) {
+  
+  # Verificar si las columnas existen antes de modificarlas
+  if ("GRADO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(GRADO_CAT = case_when(
+        GRADO %in% c(1, 2) ~ "1/2",
+        GRADO == 3 ~ "3",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(GRADO_CAT = as.factor(GRADO_CAT))
+  }
+  
+  if ("HISTOLOGIA" %in% colnames(data)) {
+    data <- data %>%
+      mutate(HISTOLOGIA_CAT = case_when(
+        HISTOLOGIA == "DUCTAL" ~ "DUCTAL",
+        TRUE ~ "NO DUCTAL"
+      )) %>%
+      mutate(HISTOLOGIA_CAT = as.factor(HISTOLOGIA_CAT))
+  }
+  
+  if ("Ki67" %in% colnames(data)) {
+    data <- data %>%
+      mutate(Ki67_CAT = case_when(
+        Ki67 <= 14 ~ "<=14",
+        Ki67 > 14 ~ ">14",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(Ki67_CAT = as.factor(Ki67_CAT))
+  }
+  
+  if ("FENOTIPO_IHQ" %in% colnames(data)) {
+    data <- data %>%
+      mutate(FENOTIPO_IHQ_CAT = case_when(
+        FENOTIPO_IHQ %in% c("LUMINAL A", "LUMINAL B") ~ "LUMINAL",
+        FENOTIPO_IHQ %in% c("LUMINAL-HER2", "HER2") ~ "HER2",
+        TRUE ~ "TRIPLE NEGATIVO"
+      )) %>%
+      mutate(FENOTIPO_IHQ_CAT = as.factor(FENOTIPO_IHQ_CAT))
+  }
+  
+  if ("ESTADIO" %in% colnames(data)) {
+    data <- data %>%
+      mutate(ESTADIO_CAT = case_when(
+        ESTADIO %in% c("I", "IA", "IB") ~ "I",
+        ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+        ESTADIO %in% c("III", "IIIA", "IIIB", "IIIC") ~ "III",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(ESTADIO_CAT = as.factor(ESTADIO_CAT))
+  }
+  
+  if ("TIPO_QT_NEOADY_OK" %in% colnames(data)) {
+    data <- data %>%
+      mutate(QT_CAT = case_when(
+        TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE") ~ "antiHER2",
+        TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA", "QUIMIOTERAPIA-INMUNOTERAPIA") ~ "INMUNO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(QT_CAT = as.factor(QT_CAT))
+  }
+  
+  if ("No_ANTIBIOTICOS" %in% colnames(data)) {
+  data <- data %>%
+    mutate(No_ANTIBIOTICOS_CAT = case_when(
+      No_ANTIBIOTICOS == 1 ~ "Una vez",
+      No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+      TRUE ~ NA_character_
+    )) %>%
+    mutate(No_ANTIBIOTICOS_CAT = as.factor(No_ANTIBIOTICOS_CAT)) %>%
+    mutate(No_ANTIBIOTICOS_CAT = droplevels(No_ANTIBIOTICOS_CAT))
+}
+  
+  if ("RCB" %in% colnames(data)) {
+    data <- data %>%
+      mutate(RCP = case_when(
+        RCB %in% c("RCB-0", "RCB-I") ~ "SI",
+        RCB %in% c("RCB-II", "RCB-III") ~ "NO",
+        TRUE ~ NA_character_
+      )) %>%
+      mutate(RCP = as.factor(RCP))
+  }
+  
+  return(data)
+}
+
+evaluar_modelo <- function(modelo, datos_validacion, variable_respuesta) {
+  library(pROC)
+  library(ggplot2)
+  library(ResourceSelection)  # Para la prueba de Hosmer-Lemeshow (opcional)
+
+  # Obtener las variables que necesita el modelo
+  vars_modelo <- all.vars(formula(modelo))[-1]
+
+  # Asegurar que los niveles de factores coincidan
+  datos_validacion_filtrados <- datos_validacion[, c(variable_respuesta, vars_modelo)]
+
+  for (var in vars_modelo) {
+    if (is.factor(model.frame(modelo)[[var]])) {
+      datos_validacion_filtrados[[var]] <- factor(
+        datos_validacion_filtrados[[var]],
+        levels = levels(model.frame(modelo)[[var]])
+      )
+    }
+  }
+
+  # Predicciones
+  probs <- predict(modelo, newdata = datos_validacion_filtrados, type = "response")
+  obs <- datos_validacion_filtrados[[variable_respuesta]]
+
+  # CURVA ROC
+  roc_obj <- roc(obs, probs)
+  plot(roc_obj, main = paste("Curva ROC - AUC:", round(auc(roc_obj), 3)), col = "#00AEDA", lwd = 2)
+
+  # CALIBRACIÓN
+  df_cal <- data.frame(obs = as.numeric(obs == "SI"), pred = probs)
+  df_cal$pred_bin <- cut(df_cal$pred, breaks = seq(0, 1, by = 0.1), include.lowest = TRUE)
+  cal_plot <- aggregate(obs ~ pred_bin, data = df_cal, mean)
+  cal_plot$pred_mean <- aggregate(pred ~ pred_bin, data = df_cal, mean)$pred
+
+  ggplot(cal_plot, aes(x = pred_mean, y = obs)) +
+    geom_line(color = "#00AEDA", linewidth = 1.5) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#002859") +
+    labs(title = "Gráfico de Calibración",
+         x = "Probabilidad predicha",
+         y = "Proporción observada") +
+    theme_minimal()
+}
+
+library(ggplot2)
+library(dplyr)
+
+confusion_matrix_plot <- function(modelo, data, evento, threshold = 0.5) {
+  # Predecir probabilidades y clasificar según umbral
+  prob_pred <- predict(modelo, newdata = data, type = "response")
+  pred_clase <- ifelse(prob_pred >= threshold, 1, 0)
+  
+  # Variable real (convertir si es necesario)
+  real <- data[[evento]]
+  if (!all(real %in% c(0, 1))) {
+    real <- as.numeric(as.factor(real)) - 1
+  }
+  
+  # Crear data frame con real y predicho
+  df_cm <- data.frame(Real = factor(real, levels = c(1, 0)),
+                      Predicho = factor(pred_clase, levels = c(1, 0)))
+  
+  # Contar combinaciones
+  cm_table <- df_cm %>%
+    count(Real, Predicho)
+  
+  # Graficar con ggplot2
+  ggplot(cm_table, aes(x = Real, y = Predicho)) +
+    geom_tile(aes(fill = n), color = "#002859", linewidth = 1) +
+    geom_text(aes(label = n), color = "white", size = 6) +
+    scale_fill_gradient(low = "#00AEDA", high = "#00AEDA") +
+    labs(title = "Matriz de Confusión",
+         x = "Valor Real", y = "Valor Predicho") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.title = element_text(face = "bold"))
+}
+
+evaluar_modelo_holdout <- function(data, modelo_inicial, 
+                                   n_iteraciones, 
+                                   prop_entrenamiento, 
+                                   umbral = 0.5, 
+                                   mostrar_roc = FALSE, 
+                                   mostrar_tabla = TRUE) {
+  library(caret)
+  library(pROC)
+  library(plotly)
+  library(kableExtra)
+  
+  niveles <- levels(data$RCP)
+  
+  # Vectores para guardar métricas
+  accs_entrenamiento <- c()
+  accs_test <- c()
+  sensibilidades <- c()
+  especificidades <- c()
+  f1s <- c()
+  aucs <- c()
+  
+  confusion_final <- NULL
+  auc_final <- NULL
+  
+  for (i in 1:n_iteraciones) {
+    set.seed(100 + i)
+    idx <- createDataPartition(data$RCP, p = prop_entrenamiento, list = FALSE)
+    train <- data[idx, ]
+    test <- data[-idx, ]
+    
+    modelo <- update(modelo_inicial, data = train)
+    
+    # Entrenamiento
+    pred_ent <- predict(modelo, train, type = "response")
+    pred_ent_class <- factor(ifelse(pred_ent >= umbral, "SI", "NO"), levels = niveles)
+    real_ent <- factor(train$RCP, levels = niveles)
+    cm_ent <- confusionMatrix(pred_ent_class, real_ent)
+    accs_entrenamiento[i] <- cm_ent$overall["Accuracy"]
+    
+    # Test
+    pred_test <- predict(modelo, test, type = "response")
+    pred_test_class <- factor(ifelse(pred_test >= umbral, "SI", "NO"), levels = niveles)
+    real_test <- factor(test$RCP, levels = niveles)
+    cm_test <- confusionMatrix(pred_test_class, real_test)
+    
+    accs_test[i] <- cm_test$overall["Accuracy"]
+    sensibilidades[i] <- cm_test$byClass["Sensitivity"]
+    especificidades[i] <- cm_test$byClass["Specificity"]
+    f1s[i] <- cm_test$byClass["F1"]
+    
+    roc_obj <- roc(real_test, pred_test, quiet = TRUE)
+    aucs[i] <- roc_obj$auc
+    
+    if (i == n_iteraciones) {
+      confusion_final <- cm_test
+      auc_final <- roc_obj
+    }
+  }
+  
+  resultados <- data.frame(
+    iteracion = 1:n_iteraciones,
+    acc_entrenamiento = accs_entrenamiento,
+    acc_test = accs_test,
+    sensibilidad = sensibilidades,
+    especificidad = especificidades,
+    f1 = f1s,
+    auc = aucs
+  )
+  
+  # --- Gráficos personalizados ---
+  color_linea <- "#002859"
+  color_relleno <- "#00AEDA"
+  
+  acc_plot <- plot_ly(resultados, x = ~iteracion, y = ~acc_entrenamiento, name = "Entrenamiento",
+                      type = "scatter", mode = "lines",
+                      line = list(color = color_linea, width = 2))%>%
+    add_trace(y = ~acc_test, name = "Test", mode = "lines",
+              line = list(color = "#00AEDA", width = 2)) %>%
+    layout(title = "Precisión (ACC)", xaxis = list(title = "Iteración"), yaxis = list(title = "ACC"))
+
+  metricas_plot <- plot_ly(resultados, x = ~iteracion, y = ~sensibilidad, name = "Sensibilidad",
+                           type = "scatter", mode = "lines",
+                           line = list(color = color_relleno, width = 2)) %>%
+    add_trace(y = ~especificidad, name = "Especificidad", mode = "lines",
+              line = list(color = color_linea, width = 2)) %>%
+    add_trace(y = ~f1, name = "F1-score", mode = "lines",
+              line = list(color = "#AAAAAA", width = 2)) %>%
+    layout(title = "Métricas en Test", xaxis = list(title = "Iteración"), yaxis = list(title = "Valor"))
+
+  auc_plot <- plot_ly(resultados, x = ~iteracion, y = ~auc, name = "AUC",
+                      type = "scatter", mode = "lines",
+                      line = list(color = color_relleno, width = 2)) %>%
+    layout(title = "AUC", xaxis = list(title = "Iteración"), yaxis = list(title = "AUC"))
+
+  # --- Mostrar tabla si se solicita ---
+  tabla <- NULL
+  if (mostrar_tabla) {
+    metricas_promedio <- colMeans(resultados[, -1])
+    tabla_df <- data.frame(
+      Métrica = names(metricas_promedio),
+      Promedio = round(metricas_promedio, 4)
+    )
+    tabla <- kable(tabla_df,
+                  format = "html",
+                  caption = "Métricas Promedio del Repeated Holdout",
+                  row.names = FALSE) %>%  # <- ESTA LÍNEA ES CLAVE
+      kable_styling(bootstrap_options = c("striped", "hover"),
+                  full_width = FALSE, position = "center") %>%
+      row_spec(0, bold = TRUE, color = "white", background = color_linea)
+  }
+
+  # --- Mostrar curva ROC si se solicita ---
+  if (mostrar_roc && !is.null(auc_final)) {
+    plot(auc_final, print.auc = TRUE, main = "Curva ROC Final")
+  }
+
+  return(list(
+    resultados = resultados,
+    tabla = tabla,
+    plots = list(acc = acc_plot, metricas = metricas_plot, auc = auc_plot),
+    confusion = confusion_final,
+    auc_final = auc_final
+  ))
+}
+
+detectar_asociacion <- function(data, evento, variable) {
+  resultados <- character()
+  
+  resultados <- c(resultados, paste("Analizando relación entre", evento, "y", variable))
+
+  data <- data %>% mutate(across(all_of(evento), as.factor))
+
+  if (is.numeric(data[[variable]])) {
+    resultados <- c(resultados, "(Variable numérica)")
+    
+    normalidad <- shapiro.test(data[[variable]])
+    es_normal <- normalidad$p.value > 0.05
+    resultados <- c(resultados, paste("Shapiro-Wilk p-value:", round(normalidad$p.value, 4)))
+    
+    if (length(levels(data[[evento]])) == 2 && es_normal) {
+      t_test <- t.test(data[[variable]] ~ data[[evento]])
+      resultados <- c(resultados, paste("Test t de Student p-value:", round(t_test$p.value, 4)))
+      conclusion <- ifelse(t_test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                    "No existe asociación estadística entre las variables.")
+    } else {
+      metodo <- ifelse(es_normal, "pearson", "spearman")
+      test <- cor.test(data[[variable]], as.numeric(as.factor(data[[evento]])), method = metodo)
+      resultados <- c(resultados, paste("Correlación", metodo, "p-value:", round(test$p.value, 4)))
+      conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                                  "No existe asociación estadística entre las variables.")
+    }
+    
+    resultados <- c(resultados, conclusion)
+
+  } else if (is.factor(data[[variable]]) || is.character(data[[variable]])) {
+    resultados <- c(resultados, "(Variable categórica)")
+    
+    data <- data %>%
+      mutate(across(c(all_of(evento), all_of(variable)), as.factor))
+    
+    tabla <- table(data[[evento]], data[[variable]])
+    
+    if (any(tabla < 5)) {
+      test <- fisher.test(tabla, simulate.p.value = TRUE)
+      resultados <- c(resultados, paste("Test de Fisher p-value:", round(test$p.value, 4)))
+    } else {
+      test <- chisq.test(tabla)
+      resultados <- c(resultados, paste("Test Chi-cuadrado p-value:", round(test$p.value, 4)))
+    }
+    
+    conclusion <- ifelse(test$p.value < 0.05, "Existe asociación estadística entre las variables.",
+                                              "No existe asociación estadística entre las variables.")
+    resultados <- c(resultados, conclusion)
+}}
+
+metodo_filtrado <- function(data, variable_evento) {
+  # Eliminar la variable evento de la lista de columnas
+  variables <- setdiff(names(data), variable_evento)
+  variables_asociadas <- c()
+  
+  for (var in variables) {
+    resultado <- detectar_asociacion(data, variable_evento, var)
+    
+    # Si se detecta asociación
+    if (any(grepl("Existe asociación estadística entre las variables.", resultado))) {
+      variables_asociadas <- c(variables_asociadas, var)
+    }
+  }
+  return(variables_asociadas)
+}
+
+```
+
+```{r, echo=FALSE}
+
+muestra_700_UGC_perdidos <- read_excel("muestra_700_UGC_perdidos.xlsx")
+
+# Convertir variables character en factor
+muestra_700_UGC_perdidos <- muestra_700_UGC_perdidos %>%
+  mutate_if(is.character, as.factor)
+
+muestra_700_UGC_perdidos$Tn <- factor(muestra_700_UGC_perdidos$Tn)
+muestra_700_UGC_perdidos$GRADO <- factor(muestra_700_UGC_perdidos$GRADO)
+muestra_700_UGC_perdidos$Nx <- factor(muestra_700_UGC_perdidos$Nx)
+
+variables_a_analizar <- c("EDAD_DIAGNOSTICO", "ESTADO_MENOPAUSICO", "HISTOLOGIA", "GRADO", "KI67_DICOT", "Ki67", "FENOTIPO_IHQ", "TAMAÑO", "Tn", "Nx", "ESTADIO", "TIPO_CIRUGIA", "TIPO_QT_NEOADY_OK", "RCB", "HT_ADY_OK", "RE", "RP", "RETRASOS", "No_ANTIBIOTICOS", "FECHA_ULTIMO_CONTROL", "FECHA_INICIO_QT", "FECHA_DIAGNOSTICO", "ESTADO_ULTIMO_\nCONTROL", "ANTIBIOTICO")
+
+df_procesado <- procesar_datos(muestra_700_UGC_perdidos, variables_a_analizar)
+
+df_procesado$EDAD_DIAGNOSTICO <- cut(df_procesado$EDAD_DIAGNOSTICO, breaks = c(-Inf, 39, 49, 59,69,79, Inf), labels = c("0-39", "40-49", "50-59", "60-69","70-79","≥80"))
+
+df_procesado$EDAD_DIAGNOSTICO <- as.factor(df_procesado$EDAD_DIAGNOSTICO)
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_DIAGNOSTICO = dmy(FECHA_DIAGNOSTICO),
+    FECHA_DIAGNOSTICO = cut(
+      year(FECHA_DIAGNOSTICO),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_DIAGNOSTICO = as.factor(FECHA_DIAGNOSTICO)
+  )
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_ULTIMO_CONTROL = dmy(FECHA_ULTIMO_CONTROL),
+    FECHA_ULTIMO_CONTROL = cut(
+      year(FECHA_ULTIMO_CONTROL),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_ULTIMO_CONTROL = as.factor(FECHA_ULTIMO_CONTROL)
+  )
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_INICIO_QT = dmy(FECHA_INICIO_QT),
+    FECHA_INICIO_QT = cut(
+      year(FECHA_INICIO_QT),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_INICIO_QT = as.factor(FECHA_INICIO_QT)
+  )
+
+# Seleccionar variables numéricas
+numeric_vars <- sapply(df_procesado, is.numeric)
+
+# Excluir 'Ki67' y 'No_ANTIBIOTICOS' de la normalización
+vars_a_normalizar <- setdiff(names(df_procesado)[numeric_vars], c("Ki67", "No_ANTIBIOTICOS"))
+
+# Normalizar solo esas variables
+normalized_data <- scale(df_procesado[, vars_a_normalizar])
+
+# Reemplazar las columnas originales por las normalizadas
+df_procesado[, vars_a_normalizar] <- normalized_data
+
+dataset_recodificado <- preprocesar_datos(df_procesado)
+
+# Eliminar niveles no usados
+dataset_recodificado <- droplevels(dataset_recodificado)
+
+# Eliminar columnas innecesarias
+dataset_recodificado <- subset(dataset_recodificado, select = -c(ANTIBIOTICO, GRADO, HISTOLOGIA, Ki67, KI67_DICOT, FENOTIPO_IHQ, ESTADIO, TIPO_QT_NEOADY_OK,No_ANTIBIOTICOS, RCB))
+
+# Arreglar nombre de columna malformado
+names(dataset_recodificado)[names(dataset_recodificado) == "ESTADO_ULTIMO_\nCONTROL"] <- "ESTADO_ULTIMO_CONTROL"
+```
+
+Si bien en la Actividad 1 ya se realizó un análisis preliminar de predicciones en la @sec-predicciones, en esta fase se profundiza dicho estudio aplicando el modelo óptimo identificado y validándolo de manera más rigurosa. Es importante señalar que el modelo utilizado anteriormente fue seleccionado únicamente en función del menor valor de AIC, sin considerar otras métricas de desempeño como el AUC. No obstante, dado que el objetivo principal en esta etapa es identificar el modelo con mayor capacidad predictiva, se prioriza el valor del AUC como criterio fundamental para la selección del modelo óptimo.
+
+Durante la Actividad 1 también se incurrió en un enfoque metodológico limitado en el proceso de selección de variables, al escoger manualmente un conjunto de predictores considerados a priori como relevantes con respecto al evento RCP. Esta estrategia redujo significativamente la capacidad de los métodos automáticos de selección tipo *wrapper* para evaluar el conjunto completo de predictores disponibles y construir un modelo verdaderamente optimizado. Por este motivo, se ha repetido todo el procedimiento de selección de variables, permitiendo que los algoritmos operen sobre el dataset completo y seleccionen, de manera objetiva, el subconjunto de variables con mayor valor predictivo.
+
+Adicionalmente, con el propósito de mejorar la calidad del análisis y maximizar el desempeño de los modelos generados, se ha llevado a cabo un tratamiento de datos más riguroso. En primer lugar, se ha categorizado la variable `EDAD_DIAGNOSTICO` en intervalos clínicamente relevantes: `0-39`, `40-49`, `50-59`, `60-69`, `70-79` y `≥80`, una práctica común en estudios epidemiológicos y clínicos para facilitar la interpretación y captar no linealidades en la relación entre edad y resultados clínicos (véase Altman, D.G. et al., 1991, *BMJ*, sobre categorización en modelos clínicos).
+
+Asimismo, se ha transformado la información temporal relacionada con `FECHA_DIAGNOSTICO`, `FECHA_ULTIMO_CONTROL` y `FECHA_INICIO_QT`, agrupándolas en periodos decenales (`2000-2009`, `2010-2019` y `2020-2029`). Esta recodificación permite captar patrones temporales más amplios sin introducir ruido innecesario por fechas específicas.
+
+Por otro lado, las variables numéricas del dataset han sido normalizadas para garantizar una escala comparable entre predictores continuos, a excepción de `Ki67` y `No_ANTIBIOTICOS`, que se utilizaron como base para procesos de recodificación categórica y no forman parte del análisis en su forma continua.
+
+Este enfoque revisado ha permitido desarrollar modelos más robustos y comparables, optimizando la selección de variables y mejorando las condiciones del análisis predictivo.
+
+```{r, eval=FALSE}
+
+df_procesado$EDAD_DIAGNOSTICO <- cut(df_procesado$EDAD_DIAGNOSTICO, breaks = c(-Inf, 39, 49, 59,69,79, Inf), labels = c("0-39", "40-49", "50-59", "60-69","70-79","≥80"))
+
+df_procesado$EDAD_DIAGNOSTICO <- as.factor(df_procesado$EDAD_DIAGNOSTICO)
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_DIAGNOSTICO = dmy(FECHA_DIAGNOSTICO),
+    FECHA_DIAGNOSTICO = cut(
+      year(FECHA_DIAGNOSTICO),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_DIAGNOSTICO = as.factor(FECHA_DIAGNOSTICO)
+  )
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_ULTIMO_CONTROL = dmy(FECHA_ULTIMO_CONTROL),
+    FECHA_ULTIMO_CONTROL = cut(
+      year(FECHA_ULTIMO_CONTROL),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_ULTIMO_CONTROL = as.factor(FECHA_ULTIMO_CONTROL)
+  )
+
+df_procesado <- df_procesado %>%
+  mutate(
+    FECHA_INICIO_QT = dmy(FECHA_INICIO_QT),
+    FECHA_INICIO_QT = cut(
+      year(FECHA_INICIO_QT),
+      breaks = seq(2000, 2030, by = 10),
+      labels = c("2000-2009", "2010-2019", "2020-2029"),
+      right = FALSE
+    ),
+    FECHA_INICIO_QT = as.factor(FECHA_INICIO_QT)
+  )
+
+numeric_vars <- sapply(df_procesado, is.numeric)
+
+# Excluir 'Ki67' y 'No_ANTIBIOTICOS' de la normalización
+vars_a_normalizar <- setdiff(names(df_procesado)[numeric_vars], c("Ki67", "No_ANTIBIOTICOS"))
+
+normalized_data <- scale(df_procesado[, vars_a_normalizar])
+
+df_procesado[, vars_a_normalizar] <- normalized_data
+```
+
+```{r, eval=FALSE}
+skim(dataset_recodificado)
+```
+
+```{r, echo=FALSE}
+skim(dataset_recodificado)
+```
+
+## Creación de modelos
+
+::: {.panel-tabset style="max-height: 400px; overflow-y: auto;"}
+### Modelo Básico
+
+```{r, eval=FALSE}
+dataset_modelo <- na.omit(dataset_recodificado)
+dataset_modelo <- droplevels(dataset_modelo)
+
+modelo_basico <- glm(formula= RCP ~ ., data = dataset_modelo, family = binomial("logit"))
+```
+
+```{r, echo=FALSE}
+dataset_modelo <- na.omit(dataset_recodificado)
+dataset_modelo <- droplevels(dataset_modelo)
+
+modelo_basico <- glm(formula= RCP ~ ., data = dataset_modelo, family = binomial("logit"))
+```
+
+### Forward Selection
+
+```{r, eval=FALSE}
+mod_completo <- glm(RCP ~ .,data = dataset_modelo, family = binomial("logit"))
+
+mod_basico <- glm(RCP ~ 1, data = dataset_modelo,
+                  family = binomial("logit"))
+mod_forward <- stepAIC(mod_basico, direction = "forward",
+                        scope = list(lower = formula(mod_basico),
+                                     upper = formula(mod_completo))
+```
+
+```{r, echo=FALSE, warning=FALSE}
+mod_completo <- glm(RCP ~ .,data = dataset_modelo, family = binomial("logit"))
+
+mod_basico <- glm(RCP ~ 1, data = dataset_modelo,
+                  family = binomial("logit"))
+mod_forward <- stepAIC(mod_basico, direction = "forward",
+                        scope = list(lower = formula(mod_basico),
+                                     upper = formula(mod_completo)))
+```
+
+### Backward Elimination
+
+```{r, eval=FALSE}
+mod_backward <- stepAIC(mod_completo, direction = "backward")
+```
+
+```{r, echo=FALSE, warning=FALSE}
+mod_backward <- stepAIC(mod_completo, direction = "backward")
+```
+
+### Stepwise Regression
+
+```{r, eval=FALSE}
+mod_stepwise <- stepAIC(mod_basico, direction = "both",
+                     scope = list(lower = formula(mod_basico),
+                                  upper = formula(mod_completo)))
+```
+
+```{r, echo=FALSE, warning=FALSE}
+mod_stepwise <- stepAIC(mod_basico, direction = "both",
+                     scope = list(lower = formula(mod_basico),
+                                  upper = formula(mod_completo)))
+```
+:::
+
+## Resumen de ajustes
+
+::: {.panel-tabset style="max-height: 400px; overflow-y: auto;"}
+### Forward Selection
+
+```{r, eval=FALSE}
+summary(mod_forward)
+```
+
+```{r, echo=FALSE}
+summary(mod_forward)
+```
+
+### Backward Elimination
+
+```{r, eval=FALSE}
+summary(mod_backward)
+```
+
+```{r, echo=FALSE}
+summary(mod_backward)
+```
+
+### Stepwise Regression
+
+```{r, eval=FALSE}
+summary(mod_stepwise)
+```
+
+```{r, echo=FALSE}
+summary(mod_stepwise)
+```
+:::
+
+## Evaluación de modelos
+
+::: panel-tabset
+### Modelo básico
+
+::: panel-tabset
+#### Gráficos
+
+```{r}
+evaluar_modelo(modelo_basico, datos_validacion = dataset_modelo, variable_respuesta = "RCP")
+```
+
+#### Matriz de Confusión
+
+```{r}
+confusion_matrix_plot(modelo_basico, dataset_modelo, "RCP")
+```
+:::
+
+### Forward Selection
+
+::: panel-tabset
+#### Gráficos
+
+```{r, warning=FALSE, message=FALSE}
+evaluar_modelo(mod_forward, datos_validacion = dataset_modelo, variable_respuesta = "RCP")
+```
+
+#### Matriz de Confusión
+
+```{r}
+confusion_matrix_plot(mod_forward, dataset_modelo, "RCP")
+```
+:::
+
+### Backward Elimination
+
+::: panel-tabset
+#### Gráficos
+
+```{r}
+evaluar_modelo(mod_backward, datos_validacion = dataset_modelo, variable_respuesta = "RCP")
+```
+
+#### Matriz de Confusión
+
+```{r}
+confusion_matrix_plot(mod_backward, dataset_modelo, "RCP")
+```
+:::
+
+### Stepwise Regression
+
+::: panel-tabset
+#### Gráficos
+
+```{r, warning=FALSE, message=FALSE}
+evaluar_modelo(mod_stepwise, datos_validacion = dataset_modelo, variable_respuesta = "RCP")
+```
+
+#### Matriz de Confusión
+
+```{r}
+confusion_matrix_plot(mod_stepwise, dataset_modelo, "RCP")
+```
+:::
+:::
+
+Concluyendo en este proceso, vamos a tener en cuenta 3 modelos diferentes.
+
+-   `RCP ~ .` (Modelo básico)
+
+-   `RCP ~ RE + QT_CAT + ESTADO_ULTIMO_CONTROL + EDAD_DIAGNOSTICO + RETRASOS` (Forward Selection / Stepwise Regression)
+
+-   `RCP ~ EDAD_DIAGNOSTICO + TAMAÑO + Tn + RE + ESTADO_ULTIMO_CONTROL + QT_CAT` (Backward Elimination)
+
+El modelo que incluye **todas las variables** tiene un **AUC de 0.904**, el más alto de los tres. Esto sugiere que es el que mejor se ajusta a los datos; sin embargo, su complejidad también implica un mayor riesgo de *overfitting*, ya que puede estar capturando ruido además de señal útil, al tener más grados de libertad.
+
+Por otro lado, los modelos obtenidos mediante **forward/stepwise (AUC = 0.852)** y **backward (AUC = 0.868)** han eliminado variables consideradas redundantes o irrelevantes según el criterio de información AIC. Estos métodos buscan modelos más simples que potencialmente generalicen mejor en nuevos datos.
+
+La elección entre estos modelos debe balancear capacidad predictiva y simplicidad. Si desea más información sobre los métodos de selección de variables tipo *wrapper*, puede consultar la @sec-seleccionvar, donde se explica en detalle cada uno de estos enfoques.
+
+# Validación con Repeated Hold-Out
+
+Se ha creado una función que automatiza el proceso de validación utilizando la estrategia de Repeated Hold-Out. Esta función será aplicada a cada uno de los modelos especificados previamente para evaluar su capacidad de generalización.
+
+::: {.callout-tip appearance="simple" icon="false"}
+Cabe señalar que el modelo que incluye todas las variables disponibles no será utilizado en este análisis, ya que ha demostrado generar numerosos problemas durante la fase de predicción. En concreto, se han detectado situaciones en las que aparecen clases en el conjunto de prueba que no estaban presentes en el conjunto de entrenamiento, lo que impide realizar predicciones fiables y afecta negativamente a la estabilidad del modelo. Se ha probado con técnicas de oversampling y undersampling por posibles casos de desbalance de clases, pero seguía causando el mismo tipo de error.
+:::
+
+## Aplicación del procedimiento y análisis de resultados
+
+### Forward Selection/Stepwise Regression
+
+El modelo en cuestión tiene como fórmula final:
+
+`RCP ~ RE + QT_CAT + ESTADO_ULTIMO_CONTROL + EDAD_DIAGNOSTICO + RETRASOS`
+
+::: panel-tabset
+#### n = 30
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 30, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+
+#### n = 20
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 20, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+
+#### n = 10
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_forward, 10, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+:::
+
+### Backward Elimination
+
+Tiene por modelo final:
+
+`RCP ~ EDAD_DIAGNOSTICO + TAMAÑO + Tn + RE + ESTADO_ULTIMO_CONTROL + QT_CAT`
+
+::: panel-tabset
+#### n = 30
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 30, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+
+#### n = 20
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.8)
+
+res$tabla
+
+res$plots$acc
+
+res$plots$metricas
+
+res$plots$auc
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 20, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+
+#### n = 10
+
+::: panel-tabset
+##### 75% - 25%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.75)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 80% - 20%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.8)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+##### 90% - 10%
+
+```{r, eval=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+
+```{r, echo=FALSE}
+res <- evaluar_modelo_holdout(dataset_modelo, mod_backward, 10, 0.9)
+
+res$tabla
+
+htmltools::tagList(
+  res$plots$acc,
+  tags$br(), tags$br(),
+  res$plots$metricas,
+  tags$br(), tags$br(),
+  res$plots$auc
+)
+```
+:::
+:::
+
+Con estas implementaciones del procedimiento, podemos extraer dos conclusiones clave. En primer lugar, **el número óptimo de iteraciones** es **30**, ya que con menos repeticiones los resultados tienden a verse más afectados por la variabilidad aleatoria, lo que reduce la fiabilidad de las métricas obtenidas. En segundo lugar, dado que el 37% de los casos en nuestro conjunto de datos corresponden a la clase positiva, es fundamental mantener un equilibrio adecuado entre los conjuntos de entrenamiento y prueba. Utilizar un 90% de los datos para entrenamiento dejaría muy pocas muestras en el conjunto de prueba, lo que dificultaría una evaluación sólida de la capacidad del modelo para generalizar, especialmente sobre la clase minoritaria. Por tanto, **la proporción más adecuada** es **75% para entrenamiento** y **25% para prueba**.
+
+Por otro lado, el mejor modelo para continuar con el estudio resulta ser el obtenido mediante el método de *Backward Elimination*. Esta conclusión se basa en una comparación realizada bajo condiciones óptimas: 30 iteraciones del proceso de validación y una partición del 75% para entrenamiento y 25% para prueba. Bajo este escenario, el modelo mostró un rendimiento superior en todas las métricas clave:
+
+-   `Mayor precisión` en ambos conjuntos.
+
+-   `Mayor sensibilidad` significando en una mejor capacidad para detectar verdaderos positivos.
+
+-   `Mayor AUC` que supone una excelente capacidad discriminativa global del modelo.
+
+## Búsqueda exhaustiva de predictores con evaluación honesta
+
+Con el mejor de los modelos anteriores vamos a realizar una búsqueda exhaustiva del mejor conjunto de variables teniendo en cuenta los valores fijados de **n** y **%**.
+
+En este caso el mejor modelo hasta ahora ha sido este que tiene como fórmula final:\
+`RCP ~ EDAD_DIAGNOSTICO + TAMAÑO + Tn + RE + ESTADO_ULTIMO_CONTROL + QT_CAT`
+
+Cabe destacar que se debe de tener en cuenta el modelo de validación honesta de las variables del modelo.
+
+::: {.callout-tip appearance="simple" icon="false"}
+#### ¿Qué quiere decir Validación Honesta?
+
+Significa que no debes usar el conjunto de test ni para seleccionar variables ni para entrenar.
+
+-   `En primer lugar`, debemos separar los datos en conjunto de entrenamiento y prueba.
+
+-   `En segundo lugar`, realizar la búsqueda exhaustiva sobre el conjunto de entrenamiento.
+
+-   `Finalmente,` evaluar el mejor modelo en el conjunto de prueba.
+:::
+
+Para esto, primeramente vamos a preparar todas las combinaciones de variables posibles.
+
+```{r, eval=FALSE}
+variables <- c("EDAD_DIAGNOSTICO", "TAMAÑO", "Tn", "RE", "ESTADO_ULTIMO_CONTROL", "QT_CAT")
+
+todas_combinaciones <- list()
+
+# Vamos a generar todas las combinaciones posibles
+for (i in 1:length(variables)) {
+  todas_combinaciones <- c(todas_combinaciones, combn(variables, i, simplify = FALSE))
+}
+```
+
+```{r, echo=FALSE, results='asis'}
+variables <- c("EDAD_DIAGNOSTICO", "TAMAÑO", "Tn", "RE", "ESTADO_ULTIMO_CONTROL", "QT_CAT")
+
+todas_combinaciones <- list()
+
+# Vamos a generar todas las combinaciones posibles
+for (i in 1:length(variables)) {
+  todas_combinaciones <- c(todas_combinaciones, combn(variables, i, simplify = FALSE))
+}
+
+df_combinaciones <- data.frame(
+  Combinación = sapply(todas_combinaciones, function(x) paste(x, collapse = ", "))
+)
+
+kable(df_combinaciones, format = "html", col.names = "Combinación de variables") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#002859") %>%  # Encabezado azul oscuro
+  column_spec(1, background = "#00AEDA", color = "black") %>%          # Celda con fondo azul claro
+  scroll_box(height = "200px")
+```
+
+<br>
+
+Conociendo ya todas las combinaciones posibles, vamos a evaluarlas individualmente con el método de validación utilizado anteriormente *Repeated Hold Out.* Como comentamos anteriormente se van a utilizar los valores óptimos predefinidos de **n** y **%**.
+
+```{r}
+resultados <- list()
+
+for (i in seq_along(todas_combinaciones)) {
+  vars <- todas_combinaciones[[i]]
+  formula_actual <- as.formula(paste("RCP ~", paste(vars, collapse = " + ")))
+  modelo_inicial <- glm(formula_actual, data = dataset_modelo, family = binomial)
+
+  res <- evaluar_modelo_holdout(
+    data = dataset_modelo,
+    modelo_inicial = modelo_inicial,
+    n_iteraciones = 30,               # número ya fijado
+    prop_entrenamiento = 0.75,        # porcentaje ya fijado
+    mostrar_roc = FALSE,
+    mostrar_tabla = FALSE
+  )
+
+  resultados[[i]] <- list(
+    variables = vars,
+    auc = mean(res$resultados$auc),
+    f1 = mean(res$resultados$f1),
+    acc_test = mean(res$resultados$acc_test),
+    sensibilidad = mean(res$resultados$sensibilidad),
+    especificidad = mean(res$resultados$especificidad)
+  )
+}
+```
+
+Vamos a presentar los resultados en una tabla para conseguir presentar las 5 mejores combinaciones por **el valor de AUC.**
+
+```{r}
+library(dplyr)
+
+# Paso 1: Convertimos la lista a un data.frame
+df_resultados <- lapply(resultados, function(x) {
+  data.frame(
+    AUC = x$auc,
+    F1 = x$f1,
+    Precisión = x$acc_test,
+    Especificidad = x$especificidad,
+    Sensibilidad = x$sensibilidad,
+    Combinación = paste(x$variables, collapse = ", "),
+    stringsAsFactors = FALSE
+  )
+}) %>%
+  bind_rows() %>%
+  arrange(desc(AUC))
+
+library(kableExtra)
+
+color_linea <- "#002859"
+
+df_resultados %>%
+  head(5) %>%
+  kable(format = "html", caption = "Top 5 combinaciones según AUC") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, color = "white", background = color_linea)%>%  # Encabezado azul oscuro
+  column_spec(c(1,2,3,4,5,6), background = "#00AEDA", color = "black")
+```
+
+<br>
+
+Finalmente, vemos como la combinación óptima para el modelo predictivo con el uso de regresión logística es:
+
+`RCP ~ EDAD_DIAGNOSTICO, TAMAÑO, Tn, RE, ESTADO_ULTIMO_CONTROL, QT_CAT`
+
+# Algoritmos de Aprendizaje Automático
+
+A continuación, se procederá a comparar el rendimiento del modelo de regresión logística, considerado habitualmente como el <span style="color:gold;">gold standard</span> en el ámbito clínico, con otros algoritmos de aprendizaje automático: Redes Neuronales (RRNN), Máquinas de Vectores de Soporte (SVM) y Árboles de Decisión (DT). Para cada uno de estos modelos se aplicarán técnicas de selección de variables tanto del tipo **filtrado** como **wrapper**, con el objetivo de identificar las características más relevantes. Asimismo, se utilizará el procedimiento de validación cruzada **5x2 CV**, el cual permite una evaluación honesta de los modelos, validando tanto los hiperparámetros como las combinaciones óptimas de variables. Para la validación cruzada 5x2 CV se usará la plantilla base que se encuentra en el campus virtual.
+
+Antes de la implementación de estos algoritmos de aprendizaje automático, como sabemos que los métodos de selección de variables son independientes a cualquier algoritmo y para no reflejar un estudio redundante, vamos a usar estas técnicas sobre el conjunto de datos para conocer estas técnicas.
+
+::: panel-tabset
+## Método de filtrado
+
+Se basan en aplicar **criterios estadísticos** como la correlación, la información mutua o la variabilidad al conjunto de datos, en relación con la variable de interés, en nuestro caso, **RCP**. En este análisis, vamos a utilizar el **p-valor obtenido durante el análisis bivariante** para identificar qué variables presentan una relación significativa con el evento. De este modo, conseguimos **reducir el conjunto de variables** a aquellas que son más informativas para el modelo.
+
+::: {.callout-tip appearance="simple" icon="false"}
+Como se mencionó al inicio de esta segunda actividad, el dataset ha sido tratado de forma distinta con respecto al utilizado en la primera, con el objetivo de obtener un análisis más adecuado. Por ello, es necesario **repetir el análisis bivariante** sobre este nuevo conjunto de datos para **identificar las variables que presentan una relación significativa con la variable de interés**.
+:::
+
+```{r eval=FALSE, warning=FALSE}
+variables_filtradas <- metodo_filtrado(dataset_recodificado, "RCP")
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+variables_filtradas <- metodo_filtrado(dataset_recodificado, "RCP")
+
+# Convertir a data frame para visualización
+tabla_vars <- data.frame(Variable = variables_filtradas)
+
+# Mostrar con estilo en HTML
+tabla_vars %>%
+  kable("html", caption = "Variables seleccionadas por el método de tipo Filtro", align = "c") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, bold = TRUE, background = "#002859", color = "white") %>%
+  row_spec(1:nrow(tabla_vars), background = "#00AEDA", color = "black") %>%
+  scroll_box(width = "100%", height = "300px", fixed_thead = TRUE)
+```
+
+
+## Método de wrapper
+
+Otro de los métodos de tipo *wrapper* que se ha utilizado en este estudio, aunque no se haya mencionado explícitamente como técnica de selección de variables, es el método de búsqueda exhaustiva. Este consiste en generar y evaluar todas las combinaciones posibles de variables para un modelo concreto. Posteriormente, se evalúa el rendimiento de cada una de estas combinaciones (por ejemplo, utilizando el AUC), con el objetivo de identificar aquellas que proporcionan el mejor desempeño predictivo.
+:::
+
+
+## Redes Neuronales
+
+::: panel-tabset
+### Algoritmo sin Filtrado
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(nnet)
+library(pROC)
+
+data <- dataset_modelo
+variables <- names(data)[names(data) != "RCP"]
+
+# Configuración de validación cruzada
+k_outer <- 5
+k_inner <- 2
+folds_outer <- createFolds(data$RCP, k = k_outer, list = FALSE)
+
+# Resultados
+resultados_auc <- numeric(k_outer)
+resultados_sensibilidad <- numeric(k_outer)
+resultados_accuracy <- numeric(k_outer)
+resultados_specificity <- numeric(k_outer)
+
+indices <- 1:nrow(data)
+
+for (i_outer in 1:k_outer) {
+  test_indices_outer <- indices[folds_outer == i_outer]
+  train_indices_outer <- setdiff(indices, test_indices_outer)
+  
+  datos_entrenamiento_outer <- data[train_indices_outer, ]
+  datos_test_outer <- data[test_indices_outer, ]
+  
+  folds_inner <- createFolds(datos_entrenamiento_outer$RCP, k = k_inner, list = FALSE)
+  indices_inner <- 1:nrow(datos_entrenamiento_outer)
+  
+  resultados_auc_inner <- numeric(k_inner)
+  resultados_sensibilidad_inner <- numeric(k_inner)
+  resultados_accuracy_inner <- numeric(k_inner)
+  resultados_specificity_inner <- numeric(k_inner)
+  
+  for (i_inner in 1:k_inner) {
+    test_indices_inner <- indices_inner[folds_inner == i_inner]
+    train_indices_inner <- setdiff(indices_inner, test_indices_inner)
+    
+    datos_entrenamiento_inner <- datos_entrenamiento_outer[train_indices_inner, ]
+    datos_validacion <- datos_entrenamiento_outer[test_indices_inner, ]
+
+    
+    # Hiperparámetros fijos (los mejores identificados previamente)
+    size <- 15
+    decay <- 0.001
+    maxit <- 5
+    skip <- 0
+    
+    # Fórmula con las variables seleccionadas
+    formula <- as.formula(paste("RCP ~", paste(variables, collapse = "+")))
+    
+    # Entrenamiento del modelo con nnet
+    mejor_modelo <- nnet(
+      formula,
+      data = datos_entrenamiento_inner,
+      size = size,
+      decay = decay,
+      maxit = maxit,
+      skip = skip,
+      trace = FALSE
+    )
+    
+    # Evaluación del AUC en el conjunto de validación
+    predicciones <- predict(mejor_modelo, newdata = datos_validacion, type = "raw")
+    roc_obj <- roc(ifelse(datos_validacion$RCP == "SI", 1, 0), predicciones)
+    mejor_auc <- auc(roc_obj)
+    
+    predicciones_test <- predict(mejor_modelo, newdata = datos_validacion, type = "raw")
+    clases_predichas <- ifelse(predicciones_test >= 0.5, "SI", "NO")
+    
+    resultados_sensibilidad_inner[i_inner] <- sum(clases_predichas == "SI" & datos_validacion$RCP == "SI") / sum(datos_validacion$RCP == "SI")
+    resultados_accuracy_inner[i_inner] <- mean(clases_predichas == datos_validacion$RCP)
+    resultados_specificity_inner[i_inner] <- sum(clases_predichas == "NO" & datos_validacion$RCP == "NO") / sum(datos_validacion$RCP == "NO")
+    resultados_auc_inner[i_inner] <- mejor_auc
+  }
+  
+  resultados_auc[i_outer] <- mean(resultados_auc_inner)
+  resultados_accuracy[i_outer] <- mean(resultados_accuracy_inner)
+  resultados_sensibilidad[i_outer] <- mean(resultados_sensibilidad_inner)
+  resultados_specificity[i_outer] <- mean(resultados_specificity_inner)
+}
+
+# Métricas globales
+auc_promedio <- mean(resultados_auc)
+accuracy_promedio <- mean(resultados_accuracy)
+sensibilidad_promedio <- mean(resultados_sensibilidad)
+specificity_promedio <- mean(resultados_specificity)
+
+# Tabla final
+tabla_metricas <- data.frame(
+  Pliegue = 1:k_outer,
+  AUC = round(resultados_auc, 3),
+  Accuracy = round(resultados_accuracy, 3),
+  Recall = round(resultados_sensibilidad, 3),
+  Specificity = round(resultados_specificity, 3)
+)
+
+tabla_metricas_nnet_full <- rbind(
+  tabla_metricas,
+  c("Mean", round(auc_promedio, 3), round(accuracy_promedio, 3),
+    round(sensibilidad_promedio, 3), round(specificity_promedio, 3))
+)
+
+# Visualización con colores personalizados
+library(kableExtra)
+
+kable(tabla_metricas_nnet_full, caption = "Métricas de RRNN sin Filtrado", align = "c") %>%
+  kable_styling(full_width = FALSE, font_size = 14,
+                bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_metricas_nnet_full)-1), background = "#00AEDA") %>%
+  row_spec(nrow(tabla_metricas_nnet_full), bold = TRUE, background = "#007A99", color = "white")
+```
+
+### Algoritmo con Filtrado
+
+```{r, warning=FALSE, message=FALSE}
+# Copia del dataset original
+datos_iniciales <- dataset_modelo
+
+# Extraer variables independientes
+predictoras <- setdiff(names(datos_iniciales), "RCP")
+
+# Definir estructura de validación cruzada externa (5 pliegues) e interna (2 pliegues)
+n_folds_externos <- 5
+n_folds_internos <- 2
+pliegues_externos <- createFolds(datos_iniciales$RCP, k = n_folds_externos, list = FALSE)
+
+# Inicializar contenedores de métricas
+metricas_auc <- metricas_acc <- metricas_sens <- metricas_esp <- numeric(n_folds_externos)
+
+for (fold_externo in 1:n_folds_externos) {
+  # Separar datos de entrenamiento y prueba externa
+  idx_test_externo <- which(pliegues_externos == fold_externo)
+  idx_train_externo <- setdiff(seq_len(nrow(datos_iniciales)), idx_test_externo)
+  
+  datos_train_externo <- datos_iniciales[idx_train_externo, ]
+  datos_test_externo <- datos_iniciales[idx_test_externo, ]
+  
+  # Generar pliegues internos
+  pliegues_internos <- createFolds(datos_train_externo$RCP, k = n_folds_internos, list = FALSE)
+  
+  # Preparar métricas internas
+  auc_int <- acc_int <- sens_int <- esp_int <- numeric(n_folds_internos)
+  
+  for (fold_interno in 1:n_folds_internos) {
+    # Filtrar variables según método externo
+    variables_seleccionadas <- metodo_filtrado(datos_train_externo, "RCP")
+    seleccion <- c("RCP", variables_seleccionadas)
+    datos_filtrados <- datos_train_externo[, seleccion, drop = FALSE]
+    
+    idx_val_interno <- which(pliegues_internos == fold_interno)
+    idx_entrenamiento_interno <- setdiff(seq_len(nrow(datos_filtrados)), idx_val_interno)
+    
+    datos_entreno_interno <- datos_filtrados[idx_entrenamiento_interno, ]
+    datos_val_interno <- datos_filtrados[idx_val_interno, ]
+    
+    # Inicializar búsqueda de mejor modelo
+    # Hiperparámetros fijos (los mejores identificados previamente)
+    size <- 15
+    decay <- 0.001
+    maxit <- 5
+    skip <- 0
+    
+    # Fórmula con las variables seleccionadas
+    formula <- as.formula(paste("RCP ~", paste(seleccion, collapse = "+")))
+    
+    # Entrenamiento del modelo con nnet
+    mejor_modelo <- nnet(
+      formula,
+      data = datos_entrenamiento_inner,
+      size = size,
+      decay = decay,
+      maxit = maxit,
+      skip = skip,
+      trace = FALSE
+    )
+    
+    # Evaluación del AUC en el conjunto de validación
+    predicciones <- predict(mejor_modelo, newdata = datos_val_interno, type = "raw")
+    roc_obj <- roc(ifelse(datos_val_interno$RCP == "SI", 1, 0), predicciones)
+    mejor_auc <- auc(roc_obj)
+
+    
+    # Predicción final sobre conjunto de validación interno
+    pred_clasificacion <- ifelse(predict(mejor_modelo, newdata = datos_val_interno, type = "raw") >= 0.5, "SI", "NO")
+    real <- datos_val_interno$RCP
+    
+    # Cálculo de métricas
+    sens_int[fold_interno] <- sum(pred_clasificacion == "SI" & real == "SI") / sum(real == "SI")
+    acc_int[fold_interno] <- mean(pred_clasificacion == real)
+    esp_int[fold_interno] <- sum(pred_clasificacion == "NO" & real == "NO") / sum(real == "NO")
+    auc_int[fold_interno] <- mejor_auc
+  }
+  
+  # Guardar promedios de métricas internas para el fold externo
+  metricas_auc[fold_externo] <- mean(auc_int)
+  metricas_acc[fold_externo] <- mean(acc_int)
+  metricas_sens[fold_externo] <- mean(sens_int)
+  metricas_esp[fold_externo] <- mean(esp_int)
+}
+
+# Promedios generales
+media_auc <- mean(metricas_auc)
+media_acc <- mean(metricas_acc)
+media_sens <- mean(metricas_sens)
+media_esp <- mean(metricas_esp)
+
+# Construcción de tabla final
+resumen_metricas <- data.frame(
+  Pliegue = 1:n_folds_externos,
+  AUC = round(metricas_auc, 3),
+  Accuracy = round(metricas_acc, 3),
+  Sensibilidad = round(metricas_sens, 3),
+  Especificidad = round(metricas_esp, 3)
+)
+
+# Agregar fila resumen
+resumen_metricas <- rbind(resumen_metricas,
+                          c("Media", round(media_auc, 3), round(media_acc, 3), round(media_sens, 3), round(media_esp, 3)))
+
+# Mostrar en formato tabla elegante
+kable(resumen_metricas, caption = "Métricas de RRNN con Filtrado", align = "c") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, 
+                font_size = 14) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(resumen_metricas)-1), background = "#00AEDA") %>%
+  row_spec(nrow(resumen_metricas), bold = TRUE, background = "#007A99", color = "white")
+
+```
+
+### Mejores Hiperparámetros
+
+```{r, message=FALSE, warning=FALSE}
+
+# Fijar semilla para reproducibilidad
+set.seed(123)
+
+# Separar datos en entrenamiento (75%) y prueba (25%)
+total_filas <- nrow(data)
+idx_train_total <- sample(total_filas, size = floor(0.75 * total_filas))
+conjunto_train <- data[idx_train_total, ]
+conjunto_test <- data[-idx_train_total, ]
+
+# División adicional del conjunto de entrenamiento: 80% para entrenar, 20% para validar
+idx_subtrain <- sample(nrow(conjunto_train), size = floor(0.8 * nrow(conjunto_train)))
+datos_train <- conjunto_train[idx_subtrain, ]
+datos_validacion <- conjunto_train[-idx_subtrain, ]
+
+# Inicializar resultados
+mejor_modelo <- NULL
+mayor_auc <- 0
+historial_resultados <- tibble(
+  neurons = integer(),
+  regularizacion = numeric(),
+  iteraciones = integer(),
+  salto = integer(),
+  auc_score = numeric()
+)
+
+# Definir combinaciones de hiperparámetros a explorar
+rejilla_parametros <- expand.grid(
+  neurons = c(5, 15, 20),
+  regularizacion = c(0.01, 0.5, 0.001),
+  iteraciones = c(225, 5, 20, 100),
+  salto = c(0, 1, 2)
+)
+
+# Crear fórmula para el modelo
+modelo_formula <- as.formula("RCP ~ .")
+
+# Bucle para entrenamiento con cada combinación de parámetros
+for (fila in 1:nrow(rejilla_parametros)) {
+  h <- rejilla_parametros[fila, ]
+  
+  red <- nnet(
+    formula = modelo_formula,
+    data = datos_train,
+    size = h$neurons,
+    decay = h$regularizacion,
+    maxit = h$iteraciones,
+    skip = h$salto,
+    trace = FALSE
+  )
+  
+  # Predicción en conjunto de prueba
+  pred_prob <- predict(red, newdata = conjunto_test, type = "raw")
+  
+  # Calcular AUC
+  etiquetas <- ifelse(conjunto_test$RCP == "SI", 1, 0)
+  curva_roc <- roc(etiquetas, pred_prob)
+  valor_auc <- as.numeric(auc(curva_roc))
+  
+  # Registrar resultados
+  historial_resultados <- historial_resultados %>%
+    add_row(
+      neurons = h$neurons,
+      regularizacion = h$regularizacion,
+      iteraciones = h$iteraciones,
+      salto = h$salto,
+      auc_score = valor_auc
+    )
+  
+  # Actualizar el mejor modelo
+  if (valor_auc > mayor_auc) {
+    mayor_auc <- valor_auc
+    mejor_modelo <- red
+  }
+}
+
+# Resultados ordenados por AUC
+mejores_modelos <- historial_resultados %>% arrange(desc(auc_score))
+
+mejores_modelos %>%
+  mutate(AUC = round(auc_score, 3)) %>%
+  kable("html", caption = "Resumen de combinaciones de hiperparámetros evaluadas con RRNN", align = "c") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:nrow(mejores_modelos), background = "#00AEDA", color = "black") %>%
+  scroll_box( height = "400px", fixed_thead = TRUE)
+
+```
+:::
+
+## Máquinas de Vectores de Soporte
+
+::: panel-tabset
+### Algoritmo sin Filtrado
+
+```{r, message=FALSE, warning=FALSE}
+# Configurar validación cruzada externa (5x2)
+set.seed(123)
+pliegues_externos <- 5
+pliegues_internos <- 2
+folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
+n <- nrow(data)
+
+# Inicializar vectores para resultados
+auc_scores <- numeric(pliegues_externos)
+accuracy_scores <- numeric(pliegues_externos)
+recall_scores <- numeric(pliegues_externos)
+specificity_scores <- numeric(pliegues_externos)
+
+# Matrices para predicciones y valores reales
+pred_matrix <- matrix(NA, nrow = n, ncol = pliegues_externos)
+true_values <- numeric(n)
+
+# Bucle principal de validación cruzada externa
+for (fold_idx in 1:pliegues_externos) {
+  test_idx <- which(folds_externos == fold_idx)
+  train_idx <- setdiff(1:n, test_idx)
+
+  train_data <- data[train_idx, ]
+  test_data <- data[test_idx, ]
+
+  # Validación cruzada interna para selección de modelo
+  inner_folds <- createFolds(train_data$RCP, k = pliegues_internos, list = FALSE)
+
+  metrics_inner <- data.frame(auc = numeric(pliegues_internos),
+                              acc = numeric(pliegues_internos),
+                              recall = numeric(pliegues_internos),
+                              specificity = numeric(pliegues_internos))
+
+  for (inner_idx in 1:pliegues_internos) {
+    val_idx <- which(inner_folds == inner_idx)
+    subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
+
+    train_inner <- train_data[subtrain_idx, ]
+    val_inner <- train_data[val_idx, ]
+
+    best_score <- -Inf
+    best_model <- NULL
+
+    # Hiperparámetros óptimos identificados previamente
+    kernel_opt <- "radial"
+    cost_opt <- 100
+    gamma_opt <- 0.1
+    
+    # Entrenar el modelo SVM con esos hiperparámetros
+    best_model <- svm(RCP ~ ., data = train_inner, type = "C-classification",
+                      kernel = kernel_opt, cost = cost_opt, gamma = gamma_opt, probability = TRUE)
+    
+    # Predecir probabilidades
+    prob_val <- attr(predict(best_model, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
+    pred_class <- ifelse(prob_val >= 0.85, "SI", "NO")
+    
+    # Métricas de evaluación
+    TP <- sum(pred_class == "SI" & val_inner$RCP == "SI")
+    TN <- sum(pred_class == "NO" & val_inner$RCP == "NO")
+    FP <- sum(pred_class == "SI" & val_inner$RCP == "NO")
+    FN <- sum(pred_class == "NO" & val_inner$RCP == "SI")
+    
+    recall <- TP / (TP + FN)
+    acc <- (TP + TN) / (TP + TN + FP + FN)
+    specificity <- TN / (TN + FP)
+    custom_score <- 0.8 * recall + 0.2 * acc
+    
+    # Calcular el AUC
+    auc_val <- auc(roc(ifelse(val_inner$RCP == "SI", 1, 0), prob_val))
+
+
+    metrics_inner$auc[inner_idx] <- auc_val
+    metrics_inner$acc[inner_idx] <- acc
+    metrics_inner$recall[inner_idx] <- recall
+    metrics_inner$specificity[inner_idx] <- specificity
+  }
+
+  # Evaluar en conjunto de test externo
+  final_prob <- attr(predict(best_model, newdata = test_data, probability = TRUE), "probabilities")[, "SI"]
+  final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
+
+  TP <- sum(final_class == "SI" & test_data$RCP == "SI")
+  TN <- sum(final_class == "NO" & test_data$RCP == "NO")
+  FP <- sum(final_class == "SI" & test_data$RCP == "NO")
+  FN <- sum(final_class == "NO" & test_data$RCP == "SI")
+
+  auc_scores[fold_idx] <- auc(roc(ifelse(test_data$RCP == "SI", 1, 0), final_prob))
+  accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
+  recall_scores[fold_idx] <- TP / (TP + FN)
+  specificity_scores[fold_idx] <- TN / (TN + FP)
+
+  pred_matrix[test_idx, fold_idx] <- final_prob
+  true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
+}
+
+# Tabla de resultados por pliegue
+tabla_resultados <- data.frame(
+  Fold = 1:pliegues_externos,
+  AUC = round(auc_scores, 3),
+  Accuracy = round(accuracy_scores, 3),
+  Recall = round(recall_scores, 3),
+  Specificity = round(specificity_scores, 3)
+)
+
+# Agregar fila de promedios
+promedios <- data.frame(
+  Fold = "Mean",
+  AUC = round(mean(auc_scores), 3),
+  Accuracy = round(mean(accuracy_scores), 3),
+  Recall = round(mean(recall_scores), 3),
+  Specificity = round(mean(specificity_scores), 3)
+)
+
+tabla_final <- rbind(tabla_resultados, promedios)
+
+# Mostrar tabla con estilo, colores y scroll
+tabla_final %>%
+  kable("html", caption = "Métricas de SVM sin Filtrado", align = "c") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_final) - 1), background = "#00AEDA", color = "black") %>%
+  row_spec(nrow(tabla_final), background = "#007A99", color = "white", bold = TRUE) 
+```
+
+### Algoritmo con Filtrado
+
+```{r, message=FALSE, warning=FALSE}
+# Configurar validación cruzada externa (5x2)
+set.seed(123)
+pliegues_externos <- 5
+pliegues_internos <- 2
+folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
+n <- nrow(data)
+
+# Inicializar vectores para resultados
+auc_scores <- numeric(pliegues_externos)
+accuracy_scores <- numeric(pliegues_externos)
+recall_scores <- numeric(pliegues_externos)
+specificity_scores <- numeric(pliegues_externos)
+
+# Matrices para predicciones y valores reales
+pred_matrix <- matrix(NA, nrow = n, ncol = pliegues_externos)
+true_values <- numeric(n)
+
+# Bucle principal de validación cruzada externa
+for (fold_idx in 1:pliegues_externos) {
+  test_idx <- which(folds_externos == fold_idx)
+  train_idx <- setdiff(1:n, test_idx)
+
+  train_data <- data[train_idx, ]
+  test_data <- data[test_idx, ]
+
+  # Validación cruzada interna para selección de modelo
+  inner_folds <- createFolds(train_data$RCP, k = pliegues_internos, list = FALSE)
+
+  metrics_inner <- data.frame(auc = numeric(pliegues_internos),
+                              acc = numeric(pliegues_internos),
+                              recall = numeric(pliegues_internos),
+                              specificity = numeric(pliegues_internos))
+
+  best_model <- NULL
+  best_score_global <- -Inf
+
+  for (inner_idx in 1:pliegues_internos) {
+    val_idx <- which(inner_folds == inner_idx)
+    subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
+
+    train_inner <- train_data[subtrain_idx, ]
+    val_inner <- train_data[val_idx, ]
+
+    # Filtrado de variables
+    variables_seleccionadas <- metodo_filtrado(train_inner, "RCP")
+    vars <- c("RCP", variables_seleccionadas)
+    train_inner <- train_inner[, vars, drop = FALSE]
+    val_inner <- val_inner[, vars, drop = FALSE]
+
+    # Hiperparámetros óptimos
+    kernel_opt <- "radial"
+    cost_opt <- 100
+    gamma_opt <- 0.1
+
+    # Entrenar modelo
+    best_model_fold <- svm(RCP ~ ., data = train_inner, type = "C-classification",
+                           kernel = kernel_opt, cost = cost_opt, gamma = gamma_opt, probability = TRUE)
+
+    # Validación
+    prob_val <- attr(predict(best_model_fold, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
+    pred_class <- ifelse(prob_val >= 0.85, "SI", "NO")
+
+    TP <- sum(pred_class == "SI" & val_inner$RCP == "SI")
+    TN <- sum(pred_class == "NO" & val_inner$RCP == "NO")
+    FP <- sum(pred_class == "SI" & val_inner$RCP == "NO")
+    FN <- sum(pred_class == "NO" & val_inner$RCP == "SI")
+
+    recall <- TP / (TP + FN)
+    acc <- (TP + TN) / (TP + TN + FP + FN)
+    specificity <- TN / (TN + FP)
+    custom_score <- 0.8 * recall + 0.2 * acc
+    auc_val <- auc(roc(ifelse(val_inner$RCP == "SI", 1, 0), prob_val))
+
+    metrics_inner$auc[inner_idx] <- auc_val
+    metrics_inner$acc[inner_idx] <- acc
+    metrics_inner$recall[inner_idx] <- recall
+    metrics_inner$specificity[inner_idx] <- specificity
+
+    if (custom_score > best_score_global) {
+      best_score_global <- custom_score
+      best_model <- best_model_fold
+      best_vars <- variables_seleccionadas
+    }
+  }
+
+  # Evaluación en test externo con el mejor modelo encontrado
+  test_data_filtrado <- test_data[, c("RCP", best_vars), drop = FALSE]
+  final_prob <- attr(predict(best_model, newdata = test_data_filtrado, probability = TRUE), "probabilities")[, "SI"]
+  final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
+
+  TP <- sum(final_class == "SI" & test_data_filtrado$RCP == "SI")
+  TN <- sum(final_class == "NO" & test_data_filtrado$RCP == "NO")
+  FP <- sum(final_class == "SI" & test_data_filtrado$RCP == "NO")
+  FN <- sum(final_class == "NO" & test_data_filtrado$RCP == "SI")
+
+  auc_scores[fold_idx] <- auc(roc(ifelse(test_data_filtrado$RCP == "SI", 1, 0), final_prob))
+  accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
+  recall_scores[fold_idx] <- TP / (TP + FN)
+  specificity_scores[fold_idx] <- TN / (TN + FP)
+
+  pred_matrix[test_idx, fold_idx] <- final_prob
+  true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
+}
+
+# Tabla de resultados por pliegue
+tabla_resultados <- data.frame(
+  Fold = 1:pliegues_externos,
+  AUC = round(auc_scores, 3),
+  Accuracy = round(accuracy_scores, 3),
+  Recall = round(recall_scores, 3),
+  Specificity = round(specificity_scores, 3)
+)
+
+# Fila de promedios
+promedios <- data.frame(
+  Fold = "Mean",
+  AUC = round(mean(auc_scores), 3),
+  Accuracy = round(mean(accuracy_scores), 3),
+  Recall = round(mean(recall_scores), 3),
+  Specificity = round(mean(specificity_scores), 3)
+)
+
+tabla_final <- rbind(tabla_resultados, promedios)
+
+# Mostrar tabla
+tabla_final %>%
+  kable("html", caption = "Métricas de SVM con Filtrado", align = "c") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_final) - 1), background = "#00AEDA", color = "black") %>%
+  row_spec(nrow(tabla_final), background = "#007A99", color = "white", bold = TRUE)
+```
+
+### Mejores Hiperparámetros
+
+```{r, message=FALSE, warning=FALSE}
+# Dividir el conjunto de datos en entrenamiento y test
+set.seed(123)
+indices_entrenamiento <- sample(nrow(data), 0.75 * nrow(data))
+datos_entrenamiento <- data[indices_entrenamiento, ]
+datos_test <- data[-indices_entrenamiento, ]
+
+# Dividir datos de entrenamiento en entrenamiento y validación
+train_indices <- sample(nrow(datos_entrenamiento), 0.8 * nrow(datos_entrenamiento))
+datos_entrenamiento_split <- datos_entrenamiento[train_indices, ]
+datos_validacion <- datos_entrenamiento[-train_indices, ]
+
+# Inicializar resultados
+mejor_auc <- 0
+mejor_modelo <- NULL
+resultados <- data.frame(kernel = character(), cost = numeric(), gamma = numeric(), auc = numeric(), stringsAsFactors = FALSE)
+
+# Definir hiperparámetros
+params <- expand.grid(cost = c(100, 1000, 10000, 50000, 1000000),
+                      gamma = c(0.1, 1, 10),
+                      kernel = c("linear", "radial", "sigmoid"))
+
+# Entrenar y evaluar modelos
+for (i in 1:nrow(params)) {
+  modelo <- svm(RCP ~ ., data = datos_entrenamiento_split,
+                type = "C-classification",
+                kernel = params$kernel[i],
+                cost = params$cost[i],
+                gamma = params$gamma[i],
+                probability = TRUE)
+
+  predicciones_test <- predict(modelo, newdata = datos_test, probability = TRUE)
+  probabilidades_test <- attr(predicciones_test, "probabilities")[, "SI"]
+
+  roc_obj <- roc(ifelse(datos_test$RCP == "SI", 1, 0), probabilidades_test)
+  auc_actual <- as.numeric(auc(roc_obj))
+
+  resultados <- resultados %>%
+    add_row(kernel = params$kernel[i], cost = params$cost[i], gamma = params$gamma[i], auc = auc_actual)
+
+  if (auc_actual > mejor_auc) {
+    mejor_auc <- auc_actual
+    mejor_modelo <- modelo
+  }
+}
+
+# Ordenar resultados
+resultados_ordenados_svm <- resultados %>% arrange(desc(auc))
+
+# Mostrar tabla estilizada
+resultados_ordenados_svm %>%
+  mutate(across(where(is.numeric), round, 4)) %>%
+  kable("html", caption = "Resumen de combinaciones de hiperparámetros evaluadas con SVM", align = "c") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:nrow(resultados_ordenados_svm), background = "#00AEDA", color = "black") %>%
+  scroll_box( height = "400px", fixed_thead = TRUE)
+```
+:::
+
+## Árboles de Decisión
+
+::: panel-tabset
+### Algoritmo sin Filtrado
+
+```{r, message=FALSE, warning=FALSE}
+# Validación cruzada 5x2
+set.seed(123)
+k_outer <- 5
+k_inner <- 2
+folds_outer <- createFolds(data$RCP, k = k_outer, list = FALSE)
+indices <- 1:nrow(data)
+
+# Inicializar métricas
+resultados_auc <- numeric(k_outer)
+resultados_accuracy <- numeric(k_outer)
+resultados_sensibilidad <- numeric(k_outer)
+resultados_specificity <- numeric(k_outer)
+
+# Iterar por cada pliegue externo
+for (i_outer in 1:k_outer) {
+  test_indices_outer <- indices[folds_outer == i_outer]
+  train_indices_outer <- setdiff(indices, test_indices_outer)
+  
+  train_outer <- data[train_indices_outer, ]
+  test_outer <- data[test_indices_outer, ]
+  
+  folds_inner <- createFolds(train_outer$RCP, k = k_inner, list = FALSE)
+  resultados_auc_inner <- numeric(k_inner)
+  resultados_accuracy_inner <- numeric(k_inner)
+  resultados_sensibilidad_inner <- numeric(k_inner)
+  resultados_specificity_inner <- numeric(k_inner)
+  
+  for (i_inner in 1:k_inner) {
+    test_indices_inner <- which(folds_inner == i_inner)
+    train_indices_inner <- setdiff(1:nrow(train_outer), test_indices_inner)
+    
+    train_inner <- train_outer[train_indices_inner, ]
+    val_inner <- train_outer[test_indices_inner, ]
+    
+    # Búsqueda de hiperparámetros
+    param_grid <- expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+    
+    mejor_auc <- 0
+    mejor_modelo <- NULL
+    
+    for (params in 1:nrow(param_grid)) {
+      cp <- param_grid$cp[params]
+      minsplit <- param_grid$minsplit[params]
+      minbucket <- param_grid$minbucket[params]
+      
+      modelo <- rpart(RCP ~ ., data = train_inner,
+                      method = "class",
+                      control = rpart.control(cp = cp, minsplit = minsplit, minbucket = minbucket))
+      
+      prob <- predict(modelo, newdata = val_inner, type = "prob")[, "SI"]
+      roc_obj <- roc(val_inner$RCP, prob, levels = rev(levels(val_inner$RCP)))
+      auc_val <- auc(roc_obj)
+      
+      if (auc_val > mejor_auc) {
+        mejor_auc <- auc_val
+        mejor_modelo <- modelo
+      }
+    }
+    
+    # Evaluar modelo en validación interna
+    prob <- predict(mejor_modelo, newdata = val_inner, type = "prob")[, "SI"]
+    pred <- ifelse(prob >= 0.85, "SI", "NO")
+    
+    TP <- sum(pred == "SI" & val_inner$RCP == "SI")
+    FN <- sum(pred == "NO" & val_inner$RCP == "SI")
+    FP <- sum(pred == "SI" & val_inner$RCP == "NO")
+    TN <- sum(pred == "NO" & val_inner$RCP == "NO")
+    
+    recall <- TP / (TP + FN)
+    accuracy <- (TP + TN) / (TP + TN + FP + FN)
+    specificity <- TN / (TN + FP)
+    
+    resultados_auc_inner[i_inner] <- mejor_auc
+    resultados_accuracy_inner[i_inner] <- accuracy
+    resultados_sensibilidad_inner[i_inner] <- recall
+    resultados_specificity_inner[i_inner] <- specificity
+  }
+  
+  resultados_auc[i_outer] <- mean(resultados_auc_inner)
+  resultados_accuracy[i_outer] <- mean(resultados_accuracy_inner)
+  resultados_sensibilidad[i_outer] <- mean(resultados_sensibilidad_inner)
+  resultados_specificity[i_outer] <- mean(resultados_specificity_inner)
+}
+
+# Construir tabla de resultados
+tabla_metricas <- data.frame(
+  Pliegue = 1:k_outer,
+  AUC = round(resultados_auc, 3),
+  Accuracy = round(resultados_accuracy, 3),
+  Recall = round(resultados_sensibilidad, 3),
+  Specificity = round(resultados_specificity, 3)
+)
+
+# Agregar promedio
+tabla_metricas <- rbind(tabla_metricas, data.frame(
+  Pliegue = "Mean",
+  AUC = round(mean(resultados_auc), 3),
+  Accuracy = round(mean(resultados_accuracy), 3),
+  Recall = round(mean(resultados_sensibilidad), 3),
+  Specificity = round(mean(resultados_specificity), 3)
+))
+
+tabla_metricas %>%
+  kable("html", caption = "Métricas de DT sin Filtrado") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_metricas)-1), background = "#00AEDA") %>%
+  row_spec(nrow(tabla_metricas), background = "#007A99", color = "white", bold = TRUE)
+```
+
+### Algoritmo con Filtrado
+
+```{r, message=FALSE, warning=FALSE}
+# Validación cruzada 5x2
+set.seed(123)
+k_outer <- 5
+k_inner <- 2
+folds_outer <- createFolds(data$RCP, k = k_outer, list = FALSE)
+indices <- 1:nrow(data)
+
+# Inicializar métricas
+resultados_auc <- numeric(k_outer)
+resultados_accuracy <- numeric(k_outer)
+resultados_sensibilidad <- numeric(k_outer)
+resultados_specificity <- numeric(k_outer)
+
+# Iterar por cada pliegue externo
+for (i_outer in 1:k_outer) {
+  test_indices_outer <- indices[folds_outer == i_outer]
+  train_indices_outer <- setdiff(indices, test_indices_outer)
+  
+  train_outer <- data[train_indices_outer, ]
+  test_outer <- data[test_indices_outer, ]
+  
+  folds_inner <- createFolds(train_outer$RCP, k = k_inner, list = FALSE)
+  resultados_auc_inner <- numeric(k_inner)
+  resultados_accuracy_inner <- numeric(k_inner)
+  resultados_sensibilidad_inner <- numeric(k_inner)
+  resultados_specificity_inner <- numeric(k_inner)
+  
+  for (i_inner in 1:k_inner) {
+    test_indices_inner <- which(folds_inner == i_inner)
+    train_indices_inner <- setdiff(1:nrow(train_outer), test_indices_inner)
+    
+    train_inner <- train_outer[train_indices_inner, ]
+    val_inner <- train_outer[test_indices_inner, ]
+    
+    variables_seleccionadas <- metodo_filtrado(train_inner, "RCP")
+    vars <- c("RCP", variables_seleccionadas)
+    train_inner <- train_inner[, vars, drop = FALSE]
+    val_inner <- val_inner[, vars, drop = FALSE]
+    
+    # Búsqueda de hiperparámetros
+    param_grid <- expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+    
+    mejor_auc <- 0
+    mejor_modelo <- NULL
+    
+    for (params in 1:nrow(param_grid)) {
+      cp <- param_grid$cp[params]
+      minsplit <- param_grid$minsplit[params]
+      minbucket <- param_grid$minbucket[params]
+      
+      modelo <- rpart(RCP ~ ., data = train_inner,
+                      method = "class",
+                      control = rpart.control(cp = cp, minsplit = minsplit, minbucket = minbucket))
+      
+      prob <- predict(modelo, newdata = val_inner, type = "prob")[, "SI"]
+      roc_obj <- roc(val_inner$RCP, prob, levels = rev(levels(val_inner$RCP)))
+      auc_val <- auc(roc_obj)
+      
+      if (auc_val > mejor_auc) {
+        mejor_auc <- auc_val
+        mejor_modelo <- modelo
+      }
+    }
+    
+    # Evaluar modelo en validación interna
+    prob <- predict(mejor_modelo, newdata = val_inner, type = "prob")[, "SI"]
+    pred <- ifelse(prob >= 0.85, "SI", "NO")
+    
+    TP <- sum(pred == "SI" & val_inner$RCP == "SI")
+    FN <- sum(pred == "NO" & val_inner$RCP == "SI")
+    FP <- sum(pred == "SI" & val_inner$RCP == "NO")
+    TN <- sum(pred == "NO" & val_inner$RCP == "NO")
+    
+    recall <- TP / (TP + FN)
+    accuracy <- (TP + TN) / (TP + TN + FP + FN)
+    specificity <- TN / (TN + FP)
+    
+    resultados_auc_inner[i_inner] <- mejor_auc
+    resultados_accuracy_inner[i_inner] <- accuracy
+    resultados_sensibilidad_inner[i_inner] <- recall
+    resultados_specificity_inner[i_inner] <- specificity
+  }
+  
+  resultados_auc[i_outer] <- mean(resultados_auc_inner)
+  resultados_accuracy[i_outer] <- mean(resultados_accuracy_inner)
+  resultados_sensibilidad[i_outer] <- mean(resultados_sensibilidad_inner)
+  resultados_specificity[i_outer] <- mean(resultados_specificity_inner)
+}
+
+# Construir tabla de resultados
+tabla_metricas <- data.frame(
+  Pliegue = 1:k_outer,
+  AUC = round(resultados_auc, 3),
+  Accuracy = round(resultados_accuracy, 3),
+  Recall = round(resultados_sensibilidad, 3),
+  Specificity = round(resultados_specificity, 3)
+)
+
+# Agregar promedio
+tabla_metricas <- rbind(tabla_metricas, data.frame(
+  Pliegue = "Mean",
+  AUC = round(mean(resultados_auc), 3),
+  Accuracy = round(mean(resultados_accuracy), 3),
+  Recall = round(mean(resultados_sensibilidad), 3),
+  Specificity = round(mean(resultados_specificity), 3)
+))
+
+tabla_metricas %>%
+  kable("html", caption = "Métricas de DT con Filtrado") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_metricas)-1), background = "#00AEDA") %>%
+  row_spec(nrow(tabla_metricas), background = "#007A99", color = "white", bold = TRUE)
+```
+
+### Algoritmo con Wrapper
+
+```{r, message=FALSE, warning=FALSE}
+
+
+set.seed(123)
+
+# Configuración validación cruzada
+k_outer <- 5
+k_inner <- 2
+folds_outer <- createFolds(data$RCP, k = k_outer, list = FALSE)
+indices <- 1:nrow(data)
+
+# Inicializar métricas
+resultados_auc <- numeric(k_outer)
+resultados_accuracy <- numeric(k_outer)
+resultados_sensibilidad <- numeric(k_outer)
+resultados_specificity <- numeric(k_outer)
+
+# Función de selección de variables tipo wrapper
+wrapper_seleccion <- function(df, variable_objetivo) {
+  control_rfe <- rfeControl(functions = rfFuncs, method = "cv", number = 3)
+  
+  # Quitar variable objetivo para selección
+  x <- df[, setdiff(names(df), variable_objetivo)]
+  y <- df[[variable_objetivo]]
+  
+  # Ejecutar RFE
+  resultado <- rfe(x, y, sizes = c(1:5), rfeControl = control_rfe)
+  return(predictors(resultado))
+}
+
+# Bucle externo
+for (i_outer in 1:k_outer) {
+  test_indices_outer <- indices[folds_outer == i_outer]
+  train_indices_outer <- setdiff(indices, test_indices_outer)
+  
+  train_outer <- data[train_indices_outer, ]
+  test_outer <- data[test_indices_outer, ]
+  
+  folds_inner <- createFolds(train_outer$RCP, k = k_inner, list = FALSE)
+  
+  resultados_auc_inner <- numeric(k_inner)
+  resultados_accuracy_inner <- numeric(k_inner)
+  resultados_sensibilidad_inner <- numeric(k_inner)
+  resultados_specificity_inner <- numeric(k_inner)
+  
+  for (i_inner in 1:k_inner) {
+    test_indices_inner <- which(folds_inner == i_inner)
+    train_indices_inner <- setdiff(1:nrow(train_outer), test_indices_inner)
+    
+    train_inner <- train_outer[train_indices_inner, ]
+    val_inner <- train_outer[test_indices_inner, ]
+    
+    variables_seleccionadas <- wrapper_seleccion(train_inner, "RCP")
+    vars <- c("RCP", variables_seleccionadas)
+    train_inner <- train_inner[, vars, drop = FALSE]
+    val_inner <- val_inner[, vars, drop = FALSE]
+    
+    # Hiperparámetros
+    param_grid <- expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10),
+                              minbucket = c(5, 10))
+    
+    mejor_auc <- 0
+    mejor_modelo <- NULL
+    
+    for (params in 1:nrow(param_grid)) {
+      cp <- param_grid$cp[params]
+      minsplit <- param_grid$minsplit[params]
+      minbucket <- param_grid$minbucket[params]
+      
+      modelo <- rpart(RCP ~ ., data = train_inner,
+                      method = "class",
+                      control = rpart.control(cp = cp, minsplit = minsplit, minbucket = minbucket))
+      
+      prob <- predict(modelo, newdata = val_inner, type = "prob")[, "SI"]
+      roc_obj <- roc(val_inner$RCP, prob, levels = rev(levels(val_inner$RCP)))
+      auc_val <- auc(roc_obj)
+      
+      if (auc_val > mejor_auc) {
+        mejor_auc <- auc_val
+        mejor_modelo <- modelo
+      }
+    }
+    
+    # Evaluar en validación
+    prob <- predict(mejor_modelo, newdata = val_inner, type = "prob")[, "SI"]
+    pred <- ifelse(prob >= 0.85, "SI", "NO")
+    
+    TP <- sum(pred == "SI" & val_inner$RCP == "SI")
+    FN <- sum(pred == "NO" & val_inner$RCP == "SI")
+    FP <- sum(pred == "SI" & val_inner$RCP == "NO")
+    TN <- sum(pred == "NO" & val_inner$RCP == "NO")
+    
+    recall <- TP / (TP + FN)
+    accuracy <- (TP + TN) / (TP + TN + FP + FN)
+    specificity <- TN / (TN + FP)
+    
+    resultados_auc_inner[i_inner] <- mejor_auc
+    resultados_accuracy_inner[i_inner] <- accuracy
+    resultados_sensibilidad_inner[i_inner] <- recall
+    resultados_specificity_inner[i_inner] <- specificity
+  }
+  
+  # Resultados externos
+  resultados_auc[i_outer] <- mean(resultados_auc_inner)
+  resultados_accuracy[i_outer] <- mean(resultados_accuracy_inner)
+  resultados_sensibilidad[i_outer] <- mean(resultados_sensibilidad_inner)
+  resultados_specificity[i_outer] <- mean(resultados_specificity_inner)
+}
+
+# Tabla final
+tabla_metricas <- data.frame(
+  Pliegue = 1:k_outer,
+  AUC = round(resultados_auc, 3),
+  Accuracy = round(resultados_accuracy, 3),
+  Recall = round(resultados_sensibilidad, 3),
+  Specificity = round(resultados_specificity, 3)
+)
+
+tabla_metricas <- rbind(tabla_metricas, data.frame(
+  Pliegue = "Mean",
+  AUC = round(mean(resultados_auc), 3),
+  Accuracy = round(mean(resultados_accuracy), 3),
+  Recall = round(mean(resultados_sensibilidad), 3),
+  Specificity = round(mean(resultados_specificity), 3)
+))
+
+# Mostrar con kableExtra
+tabla_metricas %>%
+  kable("html", caption = "Métricas de DT con Wrapper") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_metricas)-1), background = "#00AEDA") %>%
+  row_spec(nrow(tabla_metricas), bold = TRUE, background = "#007A99", color = "white")
+
+```
+:::
+
+# Conclusiones
+
+En esta segunda actividad se ha llevado a cabo una implementación exhaustiva de distintos modelos predictivos para estimar la probabilidad de respuesta completa patológica (RCP) en pacientes con cáncer de mama. Se han evaluado tanto enfoques clásicos como la regresión logística, como modelos más complejos de aprendizaje automático, incluyendo redes neuronales, máquinas de vectores soporte (SVM) y árboles de decisión. Para todos ellos se aplicaron técnicas de selección de variables, ya sea mediante métodos tipo filtro o tipo wrapper, con el fin de mejorar su rendimiento y su utilidad clínica.
+
+En el caso de los modelos de aprendizaje profundo, como redes neuronales y SVM, el proceso de ajuste se dividió en dos fases: primero se exploraron múltiples combinaciones de hiperparámetros y se seleccionó aquella que mostró el mejor rendimiento (según AUC) en un conjunto de validación interna. Luego, esta configuración óptima fue aplicada para entrenar el modelo completo, que fue evaluado utilizando una validación cruzada externa 5x2, garantizando una estimación robusta y realista del desempeño general.
+
+Entre todos los algoritmos de aprendizaje profundo evaluados, el mejor resultado se obtuvo con una red neuronal entrenada tras una selección de variables por método de filtrado. Este modelo alcanzó un AUC de 0.896 en su mejor configuración (15 neuronas ocultas, decay de 0.001 y 5 iteraciones), lo que evidencia que una arquitectura simple, bien regularizada y controlada en su entrenamiento, puede ser altamente competitiva.
+
+Las máquinas de vectores soporte (SVM), evaluadas con distintos valores de cost y gamma usando un kernel radial, también mostraron un rendimiento destacado. La mejor configuración alcanzó un AUC de 0.8906, confirmando la capacidad de las SVM para construir clasificadores robustos con buena generalización.
+
+No obstante, a pesar del buen rendimiento de estos modelos complejos, ninguno logró superar consistentemente al modelo de regresión logística. Este último fue optimizado de forma sistemática mediante búsqueda exhaustiva sobre todas las combinaciones posibles de variables, y evaluado utilizando validación cruzada completa. Su equilibrio entre rendimiento, simplicidad e interpretabilidad lo posicionó como la mejor alternativa en este contexto.
+
+Por este motivo, el modelo de regresión logística fue finalmente seleccionado como base para la herramienta clínica desarrollada en Shiny, ofreciendo una solución práctica, robusta y fácilmente interpretable por profesionales de la salud.
+
+En conclusión, aunque los modelos avanzados de aprendizaje profundo presentan un alto potencial y han demostrado rendimientos competitivos tras una adecuada optimización, el enfoque clásico de regresión logística, bien ajustado y evaluado, sigue siendo la opción más eficaz y recomendable para esta tarea clínica.
+
+
+
+<button id="boton-arriba" title="Volver arriba" onclick="window.scrollTo({top: 0, behavior: &#39;smooth&#39;});">
+
+↑
+
+</button>
+
+```{=html}
+<script>
+  const botonArriba = document.getElementById("boton-arriba");
+  window.addEventListener("scroll", function() {
+    if (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) {
+      botonArriba.style.display = "block";
+    } else {
+      botonArriba.style.display = "none";
+    }
+  });
+</script>
+```
