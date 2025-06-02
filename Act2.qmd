@@ -1557,93 +1557,112 @@ Otro de los métodos de tipo *wrapper* que se ha utilizado en este estudio, aunq
 library(caret)
 library(nnet)
 library(pROC)
+library(dplyr)
+library(kableExtra)
+
+set.seed(123)  # Para reproducibilidad
 
 data <- dataset_modelo
 variables <- names(data)[names(data) != "RCP"]
+modelo_formula <- as.formula(paste("RCP ~", paste(variables, collapse = " + ")))
 
 # Configuración de validación cruzada
 k_outer <- 5
 k_inner <- 2
-folds_outer <- createFolds(data$RCP, k = k_outer, list = FALSE)
+folds_outer <- createFolds(data$RCP, k = k_outer, list = TRUE)
 
-# Resultados
+# Resultados globales
 resultados_auc <- numeric(k_outer)
 resultados_sensibilidad <- numeric(k_outer)
 resultados_accuracy <- numeric(k_outer)
 resultados_specificity <- numeric(k_outer)
 
-indices <- 1:nrow(data)
-
 for (i_outer in 1:k_outer) {
-  test_indices_outer <- indices[folds_outer == i_outer]
-  train_indices_outer <- setdiff(indices, test_indices_outer)
+  test_indices_outer <- folds_outer[[i_outer]]
+  train_indices_outer <- setdiff(1:nrow(data), test_indices_outer)
   
   datos_entrenamiento_outer <- data[train_indices_outer, ]
   datos_test_outer <- data[test_indices_outer, ]
   
-  folds_inner <- createFolds(datos_entrenamiento_outer$RCP, k = k_inner, list = FALSE)
-  indices_inner <- 1:nrow(datos_entrenamiento_outer)
+  # Validación interna (2-fold)
+  folds_inner <- createFolds(datos_entrenamiento_outer$RCP, k = k_inner, list = TRUE)
   
-  resultados_auc_inner <- numeric(k_inner)
-  resultados_sensibilidad_inner <- numeric(k_inner)
-  resultados_accuracy_inner <- numeric(k_inner)
-  resultados_specificity_inner <- numeric(k_inner)
+  historial_resultados <- data.frame(
+    neurons = numeric(0),
+    regularizacion = numeric(0),
+    iteraciones = numeric(0),
+    salto = numeric(0),
+    auc_score = numeric(0)
+  )
+
+  mayor_auc <- -Inf
+  mejor_modelo <- NULL
   
   for (i_inner in 1:k_inner) {
-    test_indices_inner <- indices_inner[folds_inner == i_inner]
-    train_indices_inner <- setdiff(indices_inner, test_indices_inner)
+    test_indices_inner <- folds_inner[[i_inner]]
+    train_indices_inner <- setdiff(1:nrow(datos_entrenamiento_outer), test_indices_inner)
     
-    datos_entrenamiento_inner <- datos_entrenamiento_outer[train_indices_inner, ]
-    datos_validacion <- datos_entrenamiento_outer[test_indices_inner, ]
-
+    datos_train <- datos_entrenamiento_outer[train_indices_inner, ]
+    conjunto_test <- datos_entrenamiento_outer[test_indices_inner, ]
     
-    # Hiperparámetros fijos (los mejores identificados previamente)
-    size <- 15
-    decay <- 0.001
-    maxit <- 5
-    skip <- 0
-    
-    # Fórmula con las variables seleccionadas
-    formula <- as.formula(paste("RCP ~", paste(variables, collapse = "+")))
-    
-    # Entrenamiento del modelo con nnet
-    mejor_modelo <- nnet(
-      formula,
-      data = datos_entrenamiento_inner,
-      size = size,
-      decay = decay,
-      maxit = maxit,
-      skip = skip,
-      trace = FALSE
+    # Hiperparámetros
+    rejilla_parametros <- expand.grid(
+      neurons = c(5, 15, 20),
+      regularizacion = c(0.01, 0.5, 0.001),
+      iteraciones = c(225, 5, 20, 100),
+      salto = c(0, 1, 2)
     )
     
-    # Evaluación del AUC en el conjunto de validación
-    predicciones <- predict(mejor_modelo, newdata = datos_validacion, type = "raw")
-    roc_obj <- roc(ifelse(datos_validacion$RCP == "SI", 1, 0), predicciones)
-    mejor_auc <- auc(roc_obj)
-    
-    predicciones_test <- predict(mejor_modelo, newdata = datos_validacion, type = "raw")
-    clases_predichas <- ifelse(predicciones_test >= 0.5, "SI", "NO")
-    
-    resultados_sensibilidad_inner[i_inner] <- sum(clases_predichas == "SI" & datos_validacion$RCP == "SI") / sum(datos_validacion$RCP == "SI")
-    resultados_accuracy_inner[i_inner] <- mean(clases_predichas == datos_validacion$RCP)
-    resultados_specificity_inner[i_inner] <- sum(clases_predichas == "NO" & datos_validacion$RCP == "NO") / sum(datos_validacion$RCP == "NO")
-    resultados_auc_inner[i_inner] <- mejor_auc
+    for (fila in 1:nrow(rejilla_parametros)) {
+      h <- rejilla_parametros[fila, ]
+      
+      modelo_temp <- nnet(
+          formula = modelo_formula,
+          data = datos_train,
+          size = h$neurons,
+          decay = h$regularizacion,
+          maxit = h$iteraciones,
+          skip = h$salto,
+          trace = FALSE
+        )
+      
+      
+        pred_prob <- predict(modelo_temp, newdata = conjunto_test, type = "raw")
+        etiquetas <- ifelse(conjunto_test$RCP == "SI", 1, 0)
+        curva_roc <- roc(etiquetas, pred_prob)
+        valor_auc <- as.numeric(auc(curva_roc))
+          
+        historial_resultados <- historial_resultados %>%
+            add_row(
+              neurons = h$neurons,
+              regularizacion = h$regularizacion,
+              iteraciones = h$iteraciones,
+              salto = h$salto,
+              auc_score = valor_auc
+            )
+          
+          if (valor_auc > mayor_auc) {
+            mayor_auc <- valor_auc
+            mejor_modelo <- modelo_temp
+          }
+        }
   }
   
-  resultados_auc[i_outer] <- mean(resultados_auc_inner)
-  resultados_accuracy[i_outer] <- mean(resultados_accuracy_inner)
-  resultados_sensibilidad[i_outer] <- mean(resultados_sensibilidad_inner)
-  resultados_specificity[i_outer] <- mean(resultados_specificity_inner)
+  # Evaluación en el conjunto de prueba externo
+  predicciones_test <- predict(mejor_modelo, newdata = datos_test_outer, type = "raw")
+  clases_predichas <- ifelse(predicciones_test >= 0.5, "SI", "NO")
+  
+  # AUC
+  roc_obj <- roc(ifelse(datos_test_outer$RCP == "SI", 1, 0), predicciones_test)
+  resultados_auc[i_outer] <- as.numeric(auc(roc_obj))
+  
+  # Otras métricas
+  resultados_sensibilidad[i_outer] <- sum(clases_predichas == "SI" & datos_test_outer$RCP == "SI") / sum(datos_test_outer$RCP == "SI")
+  resultados_accuracy[i_outer] <- mean(clases_predichas == datos_test_outer$RCP)
+  resultados_specificity[i_outer] <- sum(clases_predichas == "NO" & datos_test_outer$RCP == "NO") / sum(datos_test_outer$RCP == "NO")
 }
 
 # Métricas globales
-auc_promedio <- mean(resultados_auc)
-accuracy_promedio <- mean(resultados_accuracy)
-sensibilidad_promedio <- mean(resultados_sensibilidad)
-specificity_promedio <- mean(resultados_specificity)
-
-# Tabla final
 tabla_metricas <- data.frame(
   Pliegue = 1:k_outer,
   AUC = round(resultados_auc, 3),
@@ -1654,14 +1673,12 @@ tabla_metricas <- data.frame(
 
 tabla_metricas_nnet_full <- rbind(
   tabla_metricas,
-  c("Mean", round(auc_promedio, 3), round(accuracy_promedio, 3),
-    round(sensibilidad_promedio, 3), round(specificity_promedio, 3))
+  c("Media", round(mean(resultados_auc), 3), round(mean(resultados_accuracy), 3),
+    round(mean(resultados_sensibilidad), 3), round(mean(resultados_specificity), 3))
 )
 
-# Visualización con colores personalizados
-library(kableExtra)
-
-kable(tabla_metricas_nnet_full, caption = "Métricas de RRNN sin Filtrado", align = "c") %>%
+# Visualización
+kable(tabla_metricas_nnet_full, caption = "Métricas de Red Neuronal (CV 5x2)", align = "c") %>%
   kable_styling(full_width = FALSE, font_size = 14,
                 bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
   row_spec(0, background = "#002859", color = "white") %>%
@@ -1674,9 +1691,6 @@ kable(tabla_metricas_nnet_full, caption = "Métricas de RRNN sin Filtrado", alig
 ```{r, warning=FALSE, message=FALSE}
 # Copia del dataset original
 datos_iniciales <- dataset_modelo
-
-# Extraer variables independientes
-predictoras <- setdiff(names(datos_iniciales), "RCP")
 
 # Definir estructura de validación cruzada externa (5 pliegues) e interna (2 pliegues)
 n_folds_externos <- 5
@@ -1712,33 +1726,61 @@ for (fold_externo in 1:n_folds_externos) {
     datos_entreno_interno <- datos_filtrados[idx_entrenamiento_interno, ]
     datos_val_interno <- datos_filtrados[idx_val_interno, ]
     
+    # Crear fórmula ajustada a las variables filtradas
+    formula_filtrada <- as.formula(paste("RCP ~", paste(variables_seleccionadas, collapse = " + ")))
+
     # Inicializar búsqueda de mejor modelo
-    # Hiperparámetros fijos (los mejores identificados previamente)
-    size <- 15
-    decay <- 0.001
-    maxit <- 5
-    skip <- 0
-    
-    # Fórmula con las variables seleccionadas
-    formula <- as.formula(paste("RCP ~", paste(seleccion, collapse = "+")))
-    
-    # Entrenamiento del modelo con nnet
-    mejor_modelo <- nnet(
-      formula,
-      data = datos_entrenamiento_inner,
-      size = size,
-      decay = decay,
-      maxit = maxit,
-      skip = skip,
-      trace = FALSE
+    historial_resultados <- tibble::tibble(
+      neurons = numeric(),
+      regularizacion = numeric(),
+      iteraciones = numeric(),
+      salto = numeric(),
+      auc_score = numeric()
+    )
+    mayor_auc <- -Inf
+    mejor_modelo <- NULL
+
+    # Hiperparámetros
+    rejilla_parametros <- expand.grid(
+      neurons = c(5, 15, 20),
+      regularizacion = c(0.01, 0.5, 0.001),
+      iteraciones = c(225, 5, 20, 100),
+      salto = c(0, 1, 2)
     )
     
-    # Evaluación del AUC en el conjunto de validación
-    predicciones <- predict(mejor_modelo, newdata = datos_val_interno, type = "raw")
-    roc_obj <- roc(ifelse(datos_val_interno$RCP == "SI", 1, 0), predicciones)
-    mejor_auc <- auc(roc_obj)
+    for (fila in 1:nrow(rejilla_parametros)) {
+      h <- rejilla_parametros[fila, ]
+      
+      modelo_temp <- nnet(
+        formula = formula_filtrada,
+        data = datos_entreno_interno,
+        size = h$neurons,
+        decay = h$regularizacion,
+        maxit = h$iteraciones,
+        skip = h$salto,
+        trace = FALSE
+      )
+      
+      pred_prob <- predict(modelo_temp, newdata = datos_val_interno, type = "raw")
+      etiquetas <- ifelse(datos_val_interno$RCP == "SI", 1, 0)
+      curva_roc <- roc(etiquetas, pred_prob)
+      valor_auc <- as.numeric(auc(curva_roc))
+      
+      historial_resultados <- historial_resultados %>%
+        add_row(
+          neurons = h$neurons,
+          regularizacion = h$regularizacion,
+          iteraciones = h$iteraciones,
+          salto = h$salto,
+          auc_score = valor_auc
+        )
+      
+      if (valor_auc > mayor_auc) {
+        mayor_auc <- valor_auc
+        mejor_modelo <- modelo_temp
+      }
+    }
 
-    
     # Predicción final sobre conjunto de validación interno
     pred_clasificacion <- ifelse(predict(mejor_modelo, newdata = datos_val_interno, type = "raw") >= 0.5, "SI", "NO")
     real <- datos_val_interno$RCP
@@ -1747,7 +1789,7 @@ for (fold_externo in 1:n_folds_externos) {
     sens_int[fold_interno] <- sum(pred_clasificacion == "SI" & real == "SI") / sum(real == "SI")
     acc_int[fold_interno] <- mean(pred_clasificacion == real)
     esp_int[fold_interno] <- sum(pred_clasificacion == "NO" & real == "NO") / sum(real == "NO")
-    auc_int[fold_interno] <- mejor_auc
+    auc_int[fold_interno] <- mayor_auc
   }
   
   # Guardar promedios de métricas internas para el fold externo
@@ -1773,8 +1815,10 @@ resumen_metricas <- data.frame(
 )
 
 # Agregar fila resumen
-resumen_metricas <- rbind(resumen_metricas,
-                          c("Media", round(media_auc, 3), round(media_acc, 3), round(media_sens, 3), round(media_esp, 3)))
+resumen_metricas <- rbind(
+  resumen_metricas,
+  c("Media", round(media_auc, 3), round(media_acc, 3), round(media_sens, 3), round(media_esp, 3))
+)
 
 # Mostrar en formato tabla elegante
 kable(resumen_metricas, caption = "Métricas de RRNN con Filtrado", align = "c") %>%
@@ -1886,24 +1930,36 @@ mejores_modelos %>%
 ### Algoritmo sin Filtrado
 
 ```{r, message=FALSE, warning=FALSE}
-# Configurar validación cruzada externa (5x2)
+library(e1071)
+library(caret)
+library(pROC)
+library(knitr)
+library(kableExtra)
+library(dplyr)
+
 set.seed(123)
+
+# Definir pliegues
 pliegues_externos <- 5
 pliegues_internos <- 2
-folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
 n <- nrow(data)
 
-# Inicializar vectores para resultados
-auc_scores <- numeric(pliegues_externos)
-accuracy_scores <- numeric(pliegues_externos)
-recall_scores <- numeric(pliegues_externos)
-specificity_scores <- numeric(pliegues_externos)
+folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
 
-# Matrices para predicciones y valores reales
+# Inicializar vectores para resultados
+auc_scores <- accuracy_scores <- recall_scores <- specificity_scores <- numeric(pliegues_externos)
 pred_matrix <- matrix(NA, nrow = n, ncol = pliegues_externos)
 true_values <- numeric(n)
 
-# Bucle principal de validación cruzada externa
+# Rejilla de hiperparámetros
+params <- expand.grid(
+  cost = c(100, 1000, 10000, 50000, 1000000),
+  gamma = c(0.1, 1, 10),
+  kernel = c("linear", "radial", "sigmoid"),
+  stringsAsFactors = FALSE
+)
+
+# Validación cruzada externa
 for (fold_idx in 1:pliegues_externos) {
   test_idx <- which(folds_externos == fold_idx)
   train_idx <- setdiff(1:n, test_idx)
@@ -1911,213 +1967,85 @@ for (fold_idx in 1:pliegues_externos) {
   train_data <- data[train_idx, ]
   test_data <- data[test_idx, ]
 
-  # Validación cruzada interna para selección de modelo
+  # Validación cruzada interna para buscar mejores hiperparámetros
   inner_folds <- createFolds(train_data$RCP, k = pliegues_internos, list = FALSE)
+  mejor_auc <- -Inf
+  mejor_modelo <- NULL
 
-  metrics_inner <- data.frame(auc = numeric(pliegues_internos),
-                              acc = numeric(pliegues_internos),
-                              recall = numeric(pliegues_internos),
-                              specificity = numeric(pliegues_internos))
+  for (i in 1:nrow(params)) {
+    auc_interno <- numeric(pliegues_internos)
 
-  for (inner_idx in 1:pliegues_internos) {
-    val_idx <- which(inner_folds == inner_idx)
-    subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
+    for (inner_idx in 1:pliegues_internos) {
+      val_idx <- which(inner_folds == inner_idx)
+      subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
 
-    train_inner <- train_data[subtrain_idx, ]
-    val_inner <- train_data[val_idx, ]
+      train_inner <- train_data[subtrain_idx, ]
+      val_inner <- train_data[val_idx, ]
 
-    best_score <- -Inf
-    best_model <- NULL
+      modelo <- tryCatch({
+        svm(RCP ~ ., data = train_inner,
+            type = "C-classification",
+            kernel = params$kernel[i],
+            cost = params$cost[i],
+            gamma = params$gamma[i],
+            probability = TRUE)
+      }, error = function(e) NULL)
 
-    # Hiperparámetros óptimos identificados previamente
-    kernel_opt <- "radial"
-    cost_opt <- 100
-    gamma_opt <- 0.1
-    
-    # Entrenar el modelo SVM con esos hiperparámetros
-    best_model <- svm(RCP ~ ., data = train_inner, type = "C-classification",
-                      kernel = kernel_opt, cost = cost_opt, gamma = gamma_opt, probability = TRUE)
-    
-    # Predecir probabilidades
-    prob_val <- attr(predict(best_model, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
-    pred_class <- ifelse(prob_val >= 0.85, "SI", "NO")
-    
-    # Métricas de evaluación
-    TP <- sum(pred_class == "SI" & val_inner$RCP == "SI")
-    TN <- sum(pred_class == "NO" & val_inner$RCP == "NO")
-    FP <- sum(pred_class == "SI" & val_inner$RCP == "NO")
-    FN <- sum(pred_class == "NO" & val_inner$RCP == "SI")
-    
-    recall <- TP / (TP + FN)
-    acc <- (TP + TN) / (TP + TN + FP + FN)
-    specificity <- TN / (TN + FP)
-    custom_score <- 0.8 * recall + 0.2 * acc
-    
-    # Calcular el AUC
-    auc_val <- auc(roc(ifelse(val_inner$RCP == "SI", 1, 0), prob_val))
+      if (!is.null(modelo)) {
+        prob_val <- tryCatch({
+          attr(predict(modelo, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
+        }, error = function(e) NULL)
 
+        if (!is.null(prob_val)) {
+          etiquetas <- ifelse(val_inner$RCP == "SI", 1, 0)
+          auc_val <- tryCatch({
+            as.numeric(auc(roc(etiquetas, prob_val)))
+          }, error = function(e) NA)
 
-    metrics_inner$auc[inner_idx] <- auc_val
-    metrics_inner$acc[inner_idx] <- acc
-    metrics_inner$recall[inner_idx] <- recall
-    metrics_inner$specificity[inner_idx] <- specificity
-  }
+          auc_interno[inner_idx] <- auc_val
+        }
+      }
+    }
 
-  # Evaluar en conjunto de test externo
-  final_prob <- attr(predict(best_model, newdata = test_data, probability = TRUE), "probabilities")[, "SI"]
-  final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
+    media_auc <- mean(auc_interno, na.rm = TRUE)
 
-  TP <- sum(final_class == "SI" & test_data$RCP == "SI")
-  TN <- sum(final_class == "NO" & test_data$RCP == "NO")
-  FP <- sum(final_class == "SI" & test_data$RCP == "NO")
-  FN <- sum(final_class == "NO" & test_data$RCP == "SI")
+    if (!is.na(media_auc) && media_auc > mejor_auc) {
+      mejor_auc <- media_auc
 
-  auc_scores[fold_idx] <- auc(roc(ifelse(test_data$RCP == "SI", 1, 0), final_prob))
-  accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
-  recall_scores[fold_idx] <- TP / (TP + FN)
-  specificity_scores[fold_idx] <- TN / (TN + FP)
-
-  pred_matrix[test_idx, fold_idx] <- final_prob
-  true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
-}
-
-# Tabla de resultados por pliegue
-tabla_resultados <- data.frame(
-  Fold = 1:pliegues_externos,
-  AUC = round(auc_scores, 3),
-  Accuracy = round(accuracy_scores, 3),
-  Recall = round(recall_scores, 3),
-  Specificity = round(specificity_scores, 3)
-)
-
-# Agregar fila de promedios
-promedios <- data.frame(
-  Fold = "Mean",
-  AUC = round(mean(auc_scores), 3),
-  Accuracy = round(mean(accuracy_scores), 3),
-  Recall = round(mean(recall_scores), 3),
-  Specificity = round(mean(specificity_scores), 3)
-)
-
-tabla_final <- rbind(tabla_resultados, promedios)
-
-# Mostrar tabla con estilo, colores y scroll
-tabla_final %>%
-  kable("html", caption = "Métricas de SVM sin Filtrado", align = "c") %>%
-  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
-  row_spec(0, background = "#002859", color = "white") %>%
-  row_spec(1:(nrow(tabla_final) - 1), background = "#00AEDA", color = "black") %>%
-  row_spec(nrow(tabla_final), background = "#007A99", color = "white", bold = TRUE) 
-```
-
-### Algoritmo con Filtrado
-
-```{r, message=FALSE, warning=FALSE}
-# Configurar validación cruzada externa (5x2)
-set.seed(123)
-pliegues_externos <- 5
-pliegues_internos <- 2
-folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
-n <- nrow(data)
-
-# Inicializar vectores para resultados
-auc_scores <- numeric(pliegues_externos)
-accuracy_scores <- numeric(pliegues_externos)
-recall_scores <- numeric(pliegues_externos)
-specificity_scores <- numeric(pliegues_externos)
-
-# Matrices para predicciones y valores reales
-pred_matrix <- matrix(NA, nrow = n, ncol = pliegues_externos)
-true_values <- numeric(n)
-
-# Bucle principal de validación cruzada externa
-for (fold_idx in 1:pliegues_externos) {
-  test_idx <- which(folds_externos == fold_idx)
-  train_idx <- setdiff(1:n, test_idx)
-
-  train_data <- data[train_idx, ]
-  test_data <- data[test_idx, ]
-
-  # Validación cruzada interna para selección de modelo
-  inner_folds <- createFolds(train_data$RCP, k = pliegues_internos, list = FALSE)
-
-  metrics_inner <- data.frame(auc = numeric(pliegues_internos),
-                              acc = numeric(pliegues_internos),
-                              recall = numeric(pliegues_internos),
-                              specificity = numeric(pliegues_internos))
-
-  best_model <- NULL
-  best_score_global <- -Inf
-
-  for (inner_idx in 1:pliegues_internos) {
-    val_idx <- which(inner_folds == inner_idx)
-    subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
-
-    train_inner <- train_data[subtrain_idx, ]
-    val_inner <- train_data[val_idx, ]
-
-    # Filtrado de variables
-    variables_seleccionadas <- metodo_filtrado(train_inner, "RCP")
-    vars <- c("RCP", variables_seleccionadas)
-    train_inner <- train_inner[, vars, drop = FALSE]
-    val_inner <- val_inner[, vars, drop = FALSE]
-
-    # Hiperparámetros óptimos
-    kernel_opt <- "radial"
-    cost_opt <- 100
-    gamma_opt <- 0.1
-
-    # Entrenar modelo
-    best_model_fold <- svm(RCP ~ ., data = train_inner, type = "C-classification",
-                           kernel = kernel_opt, cost = cost_opt, gamma = gamma_opt, probability = TRUE)
-
-    # Validación
-    prob_val <- attr(predict(best_model_fold, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
-    pred_class <- ifelse(prob_val >= 0.85, "SI", "NO")
-
-    TP <- sum(pred_class == "SI" & val_inner$RCP == "SI")
-    TN <- sum(pred_class == "NO" & val_inner$RCP == "NO")
-    FP <- sum(pred_class == "SI" & val_inner$RCP == "NO")
-    FN <- sum(pred_class == "NO" & val_inner$RCP == "SI")
-
-    recall <- TP / (TP + FN)
-    acc <- (TP + TN) / (TP + TN + FP + FN)
-    specificity <- TN / (TN + FP)
-    custom_score <- 0.8 * recall + 0.2 * acc
-    auc_val <- auc(roc(ifelse(val_inner$RCP == "SI", 1, 0), prob_val))
-
-    metrics_inner$auc[inner_idx] <- auc_val
-    metrics_inner$acc[inner_idx] <- acc
-    metrics_inner$recall[inner_idx] <- recall
-    metrics_inner$specificity[inner_idx] <- specificity
-
-    if (custom_score > best_score_global) {
-      best_score_global <- custom_score
-      best_model <- best_model_fold
-      best_vars <- variables_seleccionadas
+      mejor_modelo <- tryCatch({
+        svm(RCP ~ ., data = train_data,
+            type = "C-classification",
+            kernel = params$kernel[i],
+            cost = params$cost[i],
+            gamma = params$gamma[i],
+            probability = TRUE)
+      }, error = function(e) NULL)
     }
   }
 
-  # Evaluación en test externo con el mejor modelo encontrado
-  test_data_filtrado <- test_data[, c("RCP", best_vars), drop = FALSE]
-  final_prob <- attr(predict(best_model, newdata = test_data_filtrado, probability = TRUE), "probabilities")[, "SI"]
-  final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
+  # Evaluación en el conjunto externo
+  if (!is.null(mejor_modelo)) {
+    final_prob <- attr(predict(mejor_modelo, newdata = test_data, probability = TRUE), "probabilities")[, "SI"]
+    final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
 
-  TP <- sum(final_class == "SI" & test_data_filtrado$RCP == "SI")
-  TN <- sum(final_class == "NO" & test_data_filtrado$RCP == "NO")
-  FP <- sum(final_class == "SI" & test_data_filtrado$RCP == "NO")
-  FN <- sum(final_class == "NO" & test_data_filtrado$RCP == "SI")
+    TP <- sum(final_class == "SI" & test_data$RCP == "SI")
+    TN <- sum(final_class == "NO" & test_data$RCP == "NO")
+    FP <- sum(final_class == "SI" & test_data$RCP == "NO")
+    FN <- sum(final_class == "NO" & test_data$RCP == "SI")
 
-  auc_scores[fold_idx] <- auc(roc(ifelse(test_data_filtrado$RCP == "SI", 1, 0), final_prob))
-  accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
-  recall_scores[fold_idx] <- TP / (TP + FN)
-  specificity_scores[fold_idx] <- TN / (TN + FP)
+    auc_scores[fold_idx] <- auc(roc(ifelse(test_data$RCP == "SI", 1, 0), final_prob))
+    accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
+    recall_scores[fold_idx] <- TP / (TP + FN)
+    specificity_scores[fold_idx] <- TN / (TN + FP)
 
-  pred_matrix[test_idx, fold_idx] <- final_prob
-  true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
+    pred_matrix[test_idx, fold_idx] <- final_prob
+    true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
+  } else {
+    warning(paste("No se pudo entrenar un modelo válido para el fold", fold_idx))
+  }
 }
 
-# Tabla de resultados por pliegue
+# Tabla de resultados
 tabla_resultados <- data.frame(
   Fold = 1:pliegues_externos,
   AUC = round(auc_scores, 3),
@@ -2126,24 +2054,173 @@ tabla_resultados <- data.frame(
   Specificity = round(specificity_scores, 3)
 )
 
-# Fila de promedios
+# Agregar promedios
 promedios <- data.frame(
-  Fold = "Mean",
-  AUC = round(mean(auc_scores), 3),
-  Accuracy = round(mean(accuracy_scores), 3),
-  Recall = round(mean(recall_scores), 3),
-  Specificity = round(mean(specificity_scores), 3)
+  Fold = "Media",
+  AUC = round(mean(auc_scores, na.rm = TRUE), 3),
+  Accuracy = round(mean(accuracy_scores, na.rm = TRUE), 3),
+  Recall = round(mean(recall_scores, na.rm = TRUE), 3),
+  Specificity = round(mean(specificity_scores, na.rm = TRUE), 3)
 )
 
 tabla_final <- rbind(tabla_resultados, promedios)
 
 # Mostrar tabla
 tabla_final %>%
-  kable("html", caption = "Métricas de SVM con Filtrado", align = "c") %>%
+  kable("html", caption = "Métricas de SVM con Búsqueda de Hiperparámetros", align = "c") %>%
   kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
   row_spec(0, background = "#002859", color = "white") %>%
   row_spec(1:(nrow(tabla_final) - 1), background = "#00AEDA", color = "black") %>%
   row_spec(nrow(tabla_final), background = "#007A99", color = "white", bold = TRUE)
+```
+
+### Algoritmo con Filtrado
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+
+pliegues_externos <- 5
+pliegues_internos <- 2
+n <- nrow(data)
+
+folds_externos <- createFolds(data$RCP, k = pliegues_externos, list = FALSE)
+
+# Resultados
+auc_scores <- accuracy_scores <- recall_scores <- specificity_scores <- numeric(pliegues_externos)
+pred_matrix <- matrix(NA, nrow = n, ncol = pliegues_externos)
+true_values <- numeric(n)
+
+# Rejilla de hiperparámetros
+params <- expand.grid(
+  cost = c(100, 1000, 10000, 50000, 1000000),
+  gamma = c(0.1, 1, 10),
+  kernel = c("linear", "radial", "sigmoid"),
+  stringsAsFactors = FALSE
+)
+
+# Validación cruzada externa
+for (fold_idx in 1:pliegues_externos) {
+  test_idx <- which(folds_externos == fold_idx)
+  train_idx <- setdiff(1:n, test_idx)
+
+  train_data <- data[train_idx, ]
+  test_data <- data[test_idx, ]
+
+  # CV interna
+  inner_folds <- createFolds(train_data$RCP, k = pliegues_internos, list = FALSE)
+  mejor_auc <- -Inf
+  mejor_modelo <- NULL
+  mejor_vars <- NULL
+
+  for (i in 1:nrow(params)) {
+    auc_interno <- numeric(pliegues_internos)
+
+    for (inner_idx in 1:pliegues_internos) {
+      val_idx <- which(inner_folds == inner_idx)
+      subtrain_idx <- setdiff(1:nrow(train_data), val_idx)
+
+      train_inner <- train_data[subtrain_idx, ]
+      val_inner <- train_data[val_idx, ]
+
+      # --- Filtrar variables ---
+      vars_filtradas <- metodo_filtrado(train_inner, "RCP")
+      vars <- c("RCP", vars_filtradas)
+
+      train_inner <- train_inner[, vars, drop = FALSE]
+      val_inner <- val_inner[, vars, drop = FALSE]
+
+      modelo <- tryCatch({
+        svm(RCP ~ ., data = train_inner,
+            type = "C-classification",
+            kernel = params$kernel[i],
+            cost = params$cost[i],
+            gamma = params$gamma[i],
+            probability = TRUE)
+      }, error = function(e) NULL)
+
+      if (!is.null(modelo)) {
+        prob_val <- tryCatch({
+          attr(predict(modelo, newdata = val_inner, probability = TRUE), "probabilities")[, "SI"]
+        }, error = function(e) NULL)
+
+        if (!is.null(prob_val)) {
+          etiquetas <- ifelse(val_inner$RCP == "SI", 1, 0)
+          auc_val <- tryCatch({
+            as.numeric(auc(roc(etiquetas, prob_val)))
+          }, error = function(e) NA)
+
+          auc_interno[inner_idx] <- auc_val
+        }
+      }
+    }
+
+    media_auc <- mean(auc_interno, na.rm = TRUE)
+
+    if (!is.na(media_auc) && media_auc > mejor_auc) {
+      mejor_auc <- media_auc
+      mejor_vars <- vars_filtradas
+
+      mejor_modelo <- tryCatch({
+        svm(RCP ~ ., data = train_data[, c("RCP", mejor_vars), drop = FALSE],
+            type = "C-classification",
+            kernel = params$kernel[i],
+            cost = params$cost[i],
+            gamma = params$gamma[i],
+            probability = TRUE)
+      }, error = function(e) NULL)
+    }
+  }
+
+  # Evaluación en test externo con mejor modelo y variables
+  if (!is.null(mejor_modelo)) {
+    test_data_filtrado <- test_data[, c("RCP", mejor_vars), drop = FALSE]
+
+    final_prob <- attr(predict(mejor_modelo, newdata = test_data_filtrado, probability = TRUE), "probabilities")[, "SI"]
+    final_class <- ifelse(final_prob >= 0.5, "SI", "NO")
+
+    TP <- sum(final_class == "SI" & test_data_filtrado$RCP == "SI")
+    TN <- sum(final_class == "NO" & test_data_filtrado$RCP == "NO")
+    FP <- sum(final_class == "SI" & test_data_filtrado$RCP == "NO")
+    FN <- sum(final_class == "NO" & test_data_filtrado$RCP == "SI")
+
+    auc_scores[fold_idx] <- auc(roc(ifelse(test_data_filtrado$RCP == "SI", 1, 0), final_prob))
+    accuracy_scores[fold_idx] <- (TP + TN) / (TP + TN + FP + FN)
+    recall_scores[fold_idx] <- TP / (TP + FN)
+    specificity_scores[fold_idx] <- TN / (TN + FP)
+
+    pred_matrix[test_idx, fold_idx] <- final_prob
+    true_values[test_idx] <- ifelse(test_data$RCP == "SI", 1, 0)
+  } else {
+    warning(paste("No se pudo entrenar modelo válido para fold", fold_idx))
+  }
+}
+
+# Tabla de métricas
+tabla_resultados <- data.frame(
+  Fold = 1:pliegues_externos,
+  AUC = round(auc_scores, 3),
+  Accuracy = round(accuracy_scores, 3),
+  Recall = round(recall_scores, 3),
+  Specificity = round(specificity_scores, 3)
+)
+
+promedios <- data.frame(
+  Fold = "Mean",
+  AUC = round(mean(auc_scores, na.rm = TRUE), 3),
+  Accuracy = round(mean(accuracy_scores, na.rm = TRUE), 3),
+  Recall = round(mean(recall_scores, na.rm = TRUE), 3),
+  Specificity = round(mean(specificity_scores, na.rm = TRUE), 3)
+)
+
+tabla_final <- rbind(tabla_resultados, promedios)
+
+tabla_final %>%
+  kable("html", caption = "Métricas de SVM con Filtrado + Hiperparámetros", align = "c") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, background = "#002859", color = "white") %>%
+  row_spec(1:(nrow(tabla_final) - 1), background = "#00AEDA", color = "black") %>%
+  row_spec(nrow(tabla_final), background = "#007A99", color = "white", bold = TRUE)
+
 ```
 
 ### Mejores Hiperparámetros
